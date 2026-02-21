@@ -407,12 +407,10 @@ async def helpus_cmd(ctx, *, topic: str = None):
     # Debug: always show the raw messages the bot found
     debug_msg = f"🔎 **Messages found ({len(messages_collected)}):**\n{chat_history_raw}"
     await ctx.send(debug_msg[:2000] + ("\n...[truncated]" if len(debug_msg) > 2000 else ""))
+
     chat_history = strip_bot_commands(chat_history_raw)
 
-    if not chat_history.strip():
-        chat_history = chat_history_raw
-    
-    await ctx.send(f"📨 Analysing messages with Gemini...")
+    await ctx.send(f"📨 Found **{len(messages_collected)}** messages about **{topic}**. Analysing with Gemini...")
 
     try:
         result = await asyncio.to_thread(analyze_chat, chat_history)

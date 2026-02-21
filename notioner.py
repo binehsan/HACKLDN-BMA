@@ -24,6 +24,7 @@ import json
 from typing import Optional, Dict, Any
 
 import boto3
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 
@@ -92,7 +93,7 @@ def upload_html_and_get_object_url(
     if aws_region:
         client_kwargs['region_name'] = aws_region
 
-    s3 = boto3.client('s3', **client_kwargs)
+    s3 = boto3.client('s3', config=BotoConfig(signature_version='s3v4'), **client_kwargs)
 
     extra_args = {'ContentType': 'text/html'}
     if make_public:
