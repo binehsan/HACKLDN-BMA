@@ -79,8 +79,13 @@ Strict Requirements:
     - Unrelated to the explanation
     If an image URL looks irrelevant based on its filename/context, skip it entirely. It is BETTER to have no images than to have irrelevant ones.
     When you do embed an image: Use <img> tags with Tailwind styling (rounded-lg, shadow-lg, mx-auto, max-w-md). Add descriptive alt text. Add a caption below with <p class="text-center text-sm text-gray-400 mt-1">. Place near the relevant explanation.
-# 
-# """
+11. COMMUNITY KNOWLEDGE BASE: You may be provided with a "Community Knowledge" section containing explanations and tips written by real students who previously studied these topics and received 👍 upvotes from peers.
+    - If community knowledge is provided, integrate the best insights naturally into your explanations.
+    - Add a "✨ Community Spotlight" callout box (styled with a subtle gold/amber border and background) for particularly helpful community contributions.
+    - Credit the original author using their @username in the callout, e.g. "💡 Tip from @Username:".
+    - Only feature community tips that are accurate and genuinely helpful. Ignore or gently correct any community tips that contain misconceptions.
+    - If no community knowledge is provided, simply skip this — do not mention it.
+"""
 
 QUIZ_GENERATOR_PROMPT = """
 You are an expert educator creating a quiz to test students on material from their recent study session.
@@ -228,7 +233,7 @@ def analyze_chat(chat_history: str) -> dict:
     return response.parsed.model_dump()
 
 
-def generate_html_resource(chat_history: str, topics: list[str], student_level: str, subject_area: str) -> str:
+def generate_html_resource(chat_history: str, topics: list[str], student_level: str, subject_area: str, rag_context: str = "") -> str:
     """Generates the HTML study notes based on the chat history and metadata, saving it to responses/"""
     print(f"Generating HTML resource for {student_level} {subject_area} on topics: {topics}...")
 
@@ -247,6 +252,16 @@ def generate_html_resource(chat_history: str, topics: list[str], student_level: 
     else:
         image_section = "No images available."
 
+    # Build community knowledge section
+    community_section = ""
+    if rag_context.strip():
+        community_section = f"""
+    Community Knowledge (upvoted explanations from fellow students — integrate the best ones):
+{rag_context}
+"""
+    else:
+        community_section = "    Community Knowledge: None available yet."
+
     # Combine the context for the generator so it knows exactly how to pitch the lesson
     prompt_context = f"""
     Subject Area: {subject_area}
@@ -256,6 +271,8 @@ def generate_html_resource(chat_history: str, topics: list[str], student_level: 
     Available Images (embed these throughout the guide near relevant sections):
 {image_section}
     
+{community_section}
+
     Original Chat History for Context (address their exact misunderstandings):
     {chat_history}
     """

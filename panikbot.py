@@ -8,6 +8,7 @@ from collections import Counter
 from typing import Dict, Any, List
 from gemini_ai import analyze_chat, generate_html_resource, generate_quiz
 from notioner import upload_html_and_get_object_url
+from rag_store import add_message as rag_add, query_knowledge as rag_query, get_stats as rag_stats
 
 import discord
 from discord.ext import commands
@@ -19,6 +20,8 @@ SETTINGS_FILE = "settings.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.reactions = True
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
@@ -50,7 +53,8 @@ def get_guild_settings(guild_id: int) -> Dict[str, Any]:
             "hours": 24,
             "channels": [],
             "output_format": "summary",
-            "keyword_filters": []
+            "keyword_filters": [],
+            "rag_reaction_threshold": 1,
         }
         save_settings(settings)
     return settings[guild_key]
@@ -237,6 +241,9 @@ async def send_settings_embed(guild_id: int, send_fn, ephemeral=False):
     embed.add_field(name="📄 Output Format",   value=fmt.capitalize(),   inline=True)
     embed.add_field(name="📡 Channels",        value=chan_str,            inline=False)
     embed.add_field(name="🔑 Keyword Filters", value=kw_str,             inline=False)
+    rag_thresh = gs.get("rag_reaction_threshold", 1)
+    rag_info = rag_stats(guild_id)
+    embed.add_field(name="🧠 RAG Knowledge Base", value=f"{rag_info['total_entries']} entries | Threshold: {rag_thresh} 👍", inline=False)
     embed.set_footer(text="Use !changesettings time <n> to update, or @panikbot for the full menu.")
 
     if ephemeral:
@@ -358,6 +365,21 @@ async def helpnow_cmd(ctx):
         inline=False
     )
     embed.add_field(
+        name="🧠 `!rag`",
+        value="View the community knowledge base stats. Answers in threads that get 👍 reactions are automatically saved and used in future study guides.",
+        inline=False
+    )
+    embed.add_field(
+        name="🔄 `!ragsync`",
+        value="Scan all threads for 👍-upvoted messages and backfill them into the knowledge base. Run this when starting on a new device or to catch up on historical reactions.",
+        inline=False
+    )
+    embed.add_field(
+        name="⚙️ `!changesettings threshold <n>`",
+        value="Set the minimum 👍 reactions needed to add answers to the RAG knowledge base.\nExample: `!changesettings threshold 2`",
+        inline=False
+    )
+    embed.add_field(
         name="⚙️ `@panikbot`",
         value="Mention me to open the full interactive settings menu with dropdowns and buttons.",
         inline=False
@@ -413,13 +435,24 @@ async def helpus_cmd(ctx, *, topic: str = None):
 
     await ctx.send(f"📝 Generating your study guide for **{topic}**, hang tight...")
 
+    # Query community RAG knowledge base
+    community_context = ""
+    if ctx.guild:
+        try:
+            community_context = await asyncio.to_thread(rag_query, ctx.guild.id, [topic])
+            if community_context:
+                await ctx.send("🧠 Found community knowledge — weaving it into the guide!")
+        except Exception as e:
+            print(f"  ⚠️ RAG query failed: {e}")
+
     try:
         file_path = await asyncio.to_thread(
             generate_html_resource,
             chat_history=chat_history,
             topics=[topic],
             student_level="Unknown",
-            subject_area=topic
+            subject_area=topic,
+            rag_context=community_context,
         )
     except Exception as e:
         await ctx.send(f"❌ Study guide generation failed: {e}")
@@ -471,8 +504,153 @@ async def changesettings_cmd(ctx, setting: str = None, *, value: str = None):
             await ctx.send(f"✅ Time window updated to **{hours} hour(s)**.")
         except ValueError:
             await ctx.send("❌ Please provide a positive number.\nExample: `!changesettings time 12`")
+    elif setting.lower() == "threshold":
+        try:
+            threshold = int(value)
+            if threshold < 1:
+                raise ValueError()
+            set_guild_setting(ctx.guild.id, "rag_reaction_threshold", threshold)
+            await ctx.send(f"✅ RAG reaction threshold updated to **{threshold}** 👍.")
+        except ValueError:
+            await ctx.send("❌ Please provide a positive number.\nExample: `!changesettings threshold 2`")
     else:
-        await ctx.send(f"❌ Unknown setting `{setting}`.\nAvailable: `time` — or use `@panikbot` for the full settings menu.")
+        await ctx.send(f"❌ Unknown setting `{setting}`.\nAvailable: `time`, `threshold` — or use `@panikbot` for the full settings menu.")
+
+
+@bot.command(name="rag")
+async def rag_cmd(ctx):
+    if ctx.guild is None:
+        await ctx.send("Run this in a server channel.")
+        return
+
+    stats = rag_stats(ctx.guild.id)
+    guild_settings = get_guild_settings(ctx.guild.id)
+    threshold = guild_settings.get("rag_reaction_threshold", 1)
+
+    embed = discord.Embed(
+        title="🧠 Community Knowledge Base (RAG)",
+        description=(
+            "PanikBot tracks answers in **threads** that receive 👍 reactions.\n"
+            "These community-sourced explanations are stored and used to enhance "
+            "future study guides with peer-generated analogies and insights."
+        ),
+        color=0xC89116,
+    )
+    embed.add_field(name="📚 Total Entries", value=str(stats["total_entries"]), inline=True)
+    embed.add_field(name="👍 Reaction Threshold", value=str(threshold), inline=True)
+    embed.add_field(
+        name="How it works",
+        value=(
+            "1. Someone asks a question in a **thread**\n"
+            "2. Others answer in that thread\n"
+            "3. React with 👍 to good answers\n"
+            "4. Bot auto-saves answers that hit the threshold\n"
+            "5. Future `!saveus`/`!analyse` guides reference these explanations\n"
+            "6. Contributors get **✨ Community Spotlight** shoutouts!"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Change threshold: !changesettings threshold <n>")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="ragsync")
+async def ragsync_cmd(ctx):
+    """Scan all threads in the server and backfill messages with enough 👍 reactions into the RAG knowledge base."""
+    if ctx.guild is None:
+        await ctx.send("Run this in a server channel.")
+        return
+
+    guild_settings = get_guild_settings(ctx.guild.id)
+    threshold = guild_settings.get("rag_reaction_threshold", 1)
+
+    await ctx.send(
+        f"🔄 **Syncing RAG knowledge base...**\n"
+        f"Scanning all threads for messages with ≥ {threshold} 👍 reactions. This may take a moment..."
+    )
+
+    added = 0
+    updated = 0
+    scanned_threads = 0
+    scanned_messages = 0
+
+    # Gather all text channels the bot can read
+    channels = [
+        ch for ch in ctx.guild.text_channels
+        if ch.permissions_for(ctx.guild.me).read_message_history
+    ]
+
+    for channel in channels:
+        # Get active threads
+        try:
+            active_threads = channel.threads
+        except Exception:
+            active_threads = []
+
+        # Get archived threads
+        archived_threads = []
+        try:
+            async for thread in channel.archived_threads(limit=100):
+                archived_threads.append(thread)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        all_threads = list(active_threads) + archived_threads
+
+        for thread in all_threads:
+            scanned_threads += 1
+            try:
+                async for message in thread.history(limit=1000):
+                    if message.author.bot:
+                        continue
+                    if not message.content.strip():
+                        continue
+
+                    scanned_messages += 1
+
+                    # Check for 👍 reactions
+                    thumbs_count = 0
+                    for reaction in message.reactions:
+                        if str(reaction.emoji) == "👍":
+                            thumbs_count = reaction.count
+                            break
+
+                    if thumbs_count >= threshold:
+                        # Check if it's a new or existing entry
+                        stats_before = rag_stats(ctx.guild.id)
+                        try:
+                            await asyncio.to_thread(
+                                rag_add,
+                                guild_id=ctx.guild.id,
+                                message_id=message.id,
+                                author_name=message.author.display_name,
+                                content=message.content,
+                                channel_name=channel.name,
+                                thread_name=thread.name,
+                                reaction_count=thumbs_count,
+                            )
+                            stats_after = rag_stats(ctx.guild.id)
+                            if stats_after["total_entries"] > stats_before["total_entries"]:
+                                added += 1
+                            else:
+                                updated += 1
+                        except Exception as e:
+                            print(f"  ❌ RAG sync failed for message {message.id}: {e}")
+            except (discord.Forbidden, discord.HTTPException):
+                continue
+
+    final_stats = rag_stats(ctx.guild.id)
+    embed = discord.Embed(
+        title="✅ RAG Sync Complete",
+        color=0xC89116,
+    )
+    embed.add_field(name="🔍 Threads Scanned", value=str(scanned_threads), inline=True)
+    embed.add_field(name="💬 Messages Checked", value=str(scanned_messages), inline=True)
+    embed.add_field(name="➕ New Entries Added", value=str(added), inline=True)
+    embed.add_field(name="🔄 Entries Updated", value=str(updated), inline=True)
+    embed.add_field(name="📚 Total KB Entries", value=str(final_stats["total_entries"]), inline=True)
+    embed.set_footer(text=f"Threshold: {threshold} 👍 | Change with !changesettings threshold <n>")
+    await ctx.send(embed=embed)
 
 
 @bot.command(name="saveus")
@@ -571,13 +749,24 @@ async def saveus_cmd(ctx):
 
     await ctx.send("📝 Generating your study guide, hang tight...")
 
+    # Query community RAG knowledge base
+    community_context = ""
+    if ctx.guild:
+        try:
+            community_context = await asyncio.to_thread(rag_query, ctx.guild.id, topics)
+            if community_context:
+                await ctx.send("🧠 Found community knowledge — weaving it into the guide!")
+        except Exception as e:
+            print(f"  ⚠️ RAG query failed: {e}")
+
     try:
         file_path = await asyncio.to_thread(
             generate_html_resource,
             chat_history=chat_history,
             topics=topics,
             student_level=level,
-            subject_area=subject
+            subject_area=subject,
+            rag_context=community_context,
         )
     except Exception as e:
         await ctx.send(f"❌ Study guide generation failed: {e}")
@@ -738,6 +927,16 @@ class DateTimeModal(discord.ui.Modal, title="Enter Date & Time Range"):
 
         await ctx.send("📝 Generating your study guide, hang tight...")
 
+        # Query community RAG knowledge base
+        community_context = ""
+        if ctx.guild:
+            try:
+                community_context = await asyncio.to_thread(rag_query, ctx.guild.id, topics)
+                if community_context:
+                    await ctx.send("🧠 Found community knowledge — weaving it into the guide!")
+            except Exception as e:
+                print(f"  ⚠️ RAG query failed: {e}")
+
         try:
             file_path = await asyncio.to_thread(
                 generate_html_resource,
@@ -745,6 +944,7 @@ class DateTimeModal(discord.ui.Modal, title="Enter Date & Time Range"):
                 topics=topics,
                 student_level=level,
                 subject_area=subject,
+                rag_context=community_context,
             )
         except Exception as e:
             await ctx.send(f"❌ Study guide generation failed: {e}")
@@ -1100,6 +1300,16 @@ async def quiz_cmd(ctx):
             if yn_reply.content.strip().lower() in ("yes", "y"):
                 await ctx.send("📝 Generating explanation study guide, hang tight...")
 
+                # Query community RAG knowledge base
+                community_context = ""
+                if ctx.guild:
+                    try:
+                        community_context = await asyncio.to_thread(rag_query, ctx.guild.id, weak_topics)
+                        if community_context:
+                            await ctx.send("🧠 Found community knowledge — weaving it into the guide!")
+                    except Exception as e:
+                        print(f"  ⚠️ RAG query failed: {e}")
+
                 try:
                     file_name = await asyncio.to_thread(
                         generate_html_resource,
@@ -1107,6 +1317,7 @@ async def quiz_cmd(ctx):
                         weak_topics,
                         student_level,
                         subject_area,
+                        rag_context=community_context,
                     )
                 except Exception as e:
                     await ctx.send(f"❌ Study guide generation failed: {e}")
@@ -1166,6 +1377,124 @@ async def on_command_error(ctx, error):
         # Silently ignore unknown commands (e.g. !answers is handled by wait_for)
         return
     raise error
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    """Track 👍 reactions on thread messages for the community RAG knowledge base."""
+    if str(payload.emoji) != "👍":
+        return
+    if payload.guild_id is None:
+        return
+
+    guild = bot.get_guild(payload.guild_id)
+    if guild is None:
+        return
+
+    try:
+        channel = guild.get_channel(payload.channel_id) or await guild.fetch_channel(payload.channel_id)
+    except Exception:
+        return
+
+    # Only track messages inside threads
+    if not isinstance(channel, discord.Thread):
+        return
+
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except Exception:
+        return
+
+    # Ignore bot messages
+    if message.author.bot:
+        return
+
+    # Count 👍 reactions on this message
+    thumbs_count = 0
+    for reaction in message.reactions:
+        if str(reaction.emoji) == "👍":
+            thumbs_count = reaction.count
+            break
+
+    # Get guild threshold setting
+    guild_settings = get_guild_settings(payload.guild_id)
+    threshold = guild_settings.get("rag_reaction_threshold", 1)
+
+    if thumbs_count >= threshold:
+        # Add/update in RAG knowledge base
+        parent_name = channel.parent.name if channel.parent else "unknown"
+        try:
+            await asyncio.to_thread(
+                rag_add,
+                guild_id=payload.guild_id,
+                message_id=message.id,
+                author_name=message.author.display_name,
+                content=message.content,
+                channel_name=parent_name,
+                thread_name=channel.name,
+                reaction_count=thumbs_count,
+            )
+        except Exception as e:
+            print(f"  ❌ RAG add failed: {e}")
+
+
+@bot.event
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+    """Remove entries from RAG if reactions drop below threshold."""
+    if str(payload.emoji) != "👍":
+        return
+    if payload.guild_id is None:
+        return
+
+    guild = bot.get_guild(payload.guild_id)
+    if guild is None:
+        return
+
+    try:
+        channel = guild.get_channel(payload.channel_id) or await guild.fetch_channel(payload.channel_id)
+    except Exception:
+        return
+
+    if not isinstance(channel, discord.Thread):
+        return
+
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except Exception:
+        return
+
+    thumbs_count = 0
+    for reaction in message.reactions:
+        if str(reaction.emoji) == "👍":
+            thumbs_count = reaction.count
+            break
+
+    guild_settings = get_guild_settings(payload.guild_id)
+    threshold = guild_settings.get("rag_reaction_threshold", 1)
+
+    if thumbs_count < threshold:
+        try:
+            from rag_store import remove_message as rag_remove
+            await asyncio.to_thread(rag_remove, payload.guild_id, payload.message_id)
+            print(f"  🗑️ Removed from RAG (reactions dropped below threshold): {payload.message_id}")
+        except Exception as e:
+            print(f"  ❌ RAG remove failed: {e}")
+    else:
+        # Update the count
+        parent_name = channel.parent.name if channel.parent else "unknown"
+        try:
+            await asyncio.to_thread(
+                rag_add,
+                guild_id=payload.guild_id,
+                message_id=message.id,
+                author_name=message.author.display_name,
+                content=message.content,
+                channel_name=parent_name,
+                thread_name=channel.name,
+                reaction_count=thumbs_count,
+            )
+        except Exception as e:
+            print(f"  ❌ RAG update failed: {e}")
 
 
 @bot.event
