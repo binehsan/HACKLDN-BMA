@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deep Dive: Advanced Math & Physics Study Guide</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom colors for the gradient effect and accent */
+        .text-accent { color: #c89116; }
+        .bg-accent { background-color: #c89116; }
+        .border-accent { border-color: #c89116; }
+        .gradient-heading {
+            background-image: linear-gradient(to right, #c89116, #e9b33a); /* A brighter accent for headings */
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            color: transparent; /* Fallback for browsers that don't support text-fill-color */
+        }
+        .gradient-bg-section {
+            background: linear-gradient(to bottom right, #000000, #1a1a1a);
+        }
+
+        /* Print styles */
+        @media print {
+            body {
+                background-color: #ffffff !important;
+                color: #000000 !important;
+            }
+            h1, h2, h3, h4, h5, h6 {
+                color: #000000 !important;
+                background-image: none !important; /* Remove text gradients */
+                -webkit-text-fill-color: #000000 !important;
+            }
+            .text-accent, .border-accent {
+                color: #000000 !important;
+                border-color: #000000 !important;
+            }
+            .bg-accent, .gradient-bg-section, .bg-gray-800, .bg-gray-900 {
+                background-color: #f0f0f0 !important; /* Light gray for blocks */
+                color: #000000 !important;
+                background-image: none !important;
+            }
+            .print-hidden {
+                display: none !important;
+            }
+            a {
+                color: #0000EE !important; /* Standard blue for links */
+                text-decoration: underline !important;
+            }
+            /* Ensure code blocks are readable */
+            pre, code {
+                background-color: #e0e0e0 !important;
+                color: #000000 !important;
+                border: 1px solid #ccc !important;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-black text-gray-100 font-sans leading-relaxed p-6 min-h-screen">
+
+    <div class="max-w-4xl mx-auto bg-gray-900 shadow-2xl rounded-xl p-8 md:p-12 border border-gray-800">
+        <header class="text-center mb-12">
+            <h1 class="text-5xl md:text-6xl font-extrabold mb-4 gradient-heading">
+                Quantum Jumps & Cosmic Dances
+            </h1>
+            <p class="text-xl md:text-2xl text-gray-300">
+                A Deep Dive into Advanced Mathematics & Physics for Undergrads
+            </p>
+            <p class="mt-4 text-gray-400 italic">
+                Addressing your recent chat queries and clarifying those tricky concepts!
+            </p>
+        </header>
+
+        <section class="mb-12">
+            <h2 class="text-3xl md:text-4xl font-bold mb-6 gradient-heading border-b-2 border-accent pb-2">
+                1. Quantum Superposition: More Than Just Two Places at Once!
+            </h2>
+            <p class="mb-4 text-lg">
+                Hey K.IND and Amen! It sounds like you've been wrestling with the concept of quantum superposition, and it's a mind-bender for sure. You mentioned:
+            </p>
+            <blockquote class="border-l-4 border-accent pl-4 py-2 italic text-gray-300 my-4 bg-gray-800 p-4 rounded-lg shadow-inner">
+                "I think the superposition means that the black hole is in 2 places at the same time."
+            </blockquote>
+            <p class="mb-4 text-lg">
+                This is a common misconception, and it's a great starting point! Let's clear this up.
+            </p>
+
+            <h3 class="text-2xl font-semibold mb-4 text-accent">What is Quantum Superposition, Really?</h3>
+            <p class="mb-4 text-lg">
+                Imagine you're listening to a musical chord. Is the chord "in two places at the same time"? Not really. It's a combination of several individual notes, all playing simultaneously to form a single, richer sound.
+            </p>
+            <p class="mb-4 text-lg">
+                In quantum mechanics, superposition is similar. It means a quantum system (like an electron, a photon, or an atom) can exist in a combination of multiple possible states *at the same time* until it's measured. These "states" aren't necessarily physical locations, but could be properties like spin (up and down simultaneously), energy levels, or momentum.
+            </p>
+            <p class="mb-4 text-lg">
+                Think of it like a spinning coin in the air. Before it lands, it's neither heads nor tails; it's in a probabilistic combination of both. Only when it lands (is "measured") does it collapse into a definite state (heads or tails).
+            </p>
+            <p class="mb-4 text-lg">
+                <span class="font-bold text-accent">Correction for K.IND:</span> The key here is "quantum system." Black holes, in the macroscopic sense we usually talk about them, are *not* typically considered quantum systems that exhibit superposition in the way an electron does. A black hole isn't "in two places at the same time." It's a massive, classical object (though its internal physics is deeply quantum). Superposition applies to the wave function describing the *probabilities* of a quantum particle's properties, not a large object literally occupying multiple distinct locations simultaneously.
+            </p>
+            <p class="text-lg">
+                So, while the universe is weird, a black hole isn't literally chilling in two different spots at once because of superposition! It's about probabilities and combinations of states for tiny particles.
+            </p>
+        </section>
+
+        <section class="mb-12">
+            <h2 class="text-3xl md:text-4xl font-bold mb-6 gradient-heading border-b-2 border-accent pb-2">
+                2. Orbital Mechanics: Why Earth Doesn't Fall into the Sun
+            </h2>
+            <p class="mb-4 text-lg">
+                K.IND, you asked:
+            </p>
+            <blockquote class="border-l-4 border-accent pl-4 py-2 italic text-gray-300 my-4 bg-gray-800 p-4 rounded-lg shadow-inner">
+                "Please explain why the earth doesn't fall into the sun."
+            </blockquote>
+            <p class="mb-4 text-lg">
+                This is a classic question that gets at the heart of how gravity and motion work in our solar system!
+            </p>
+
+            <h3 class="text-2xl font-semibold mb-4 text-accent">The Cosmic Tug-of-War: Gravity vs. Inertia</h3>
+            <p class="mb-4 text-lg">
+                The Earth doesn't fall into the Sun for the same reason you don't fall towards the ground when you swing a ball on a string around your head.
+            </p>
+            <p class="mb-4 text-lg">
+                1.  <span class="font-bold text-accent">Gravity is pulling:</span> The Sun's immense gravity *is* constantly pulling the Earth towards it. This is the "string" in our analogy. If the Earth were perfectly still, it absolutely *would* fall into the Sun.
+            </p>
+            <p class="mb-4 text-lg">
+                2.  <span class="font-bold text-accent">Earth is moving sideways:</span> However, the Earth isn't still. It has a tremendous amount of tangential velocity – it's constantly moving *sideways* relative to the Sun. This is like the speed you give the ball when you swing it.
+            </p>
+            <p class="mb-4 text-lg">
+                The combination of these two forces creates a stable orbit. The Earth is constantly "falling" towards the Sun, but because it's also moving so fast sideways, it keeps missing! It falls *around* the Sun, rather than *into* it. This delicate balance between the gravitational pull (centripetal force) and the Earth's inertia (tendency to move in a straight line) is what keeps us in a stable, elliptical path.
+            </p>
+            <div class="bg-gray-800 p-6 rounded-lg my-6 shadow-xl border border-gray-700">
+                <h4 class="text-xl font-bold text-accent mb-3">Key Concept: Centripetal Force</h4>
+                <p class="text-lg">
+                    For an object to move in a circle (or an ellipse, which is a stretched circle), there must be a force pulling it towards the center of that circle. This is called the <span class="font-bold text-accent">centripetal force</span>. In the case of planetary orbits, gravity provides this force.
+                </p>
+                <p class="mt-3 text-lg">
+                    The centripetal force required for orbit is given by:
+                </p>
+                <p class="font-mono text-yellow-300 bg-black p-3 rounded-md text-center text-xl mt-3">
+                    \( F_c = \frac{mv^2}{r} \)
+                </p>
+                <p class="text-lg mt-3">
+                    Where \( m \) is the mass of the orbiting body, \( v \) is its tangential velocity, and \( r \) is the orbital radius. When this force balances the gravitational force \( F_g = \frac{GMm}{r^2} \), a stable orbit is achieved.
+                </p>
+            </div>
+        </section>
+
+        <section class="mb-12">
+            <h2 class="text-3xl md:text-4xl font-bold mb-6 gradient-heading border-b-2 border-accent pb-2">
+                3. Black Hole Lifespan & Hawking Radiation
+            </h2>
+            <p class="mb-4 text-lg">
+                K.IND, you also pondered:
+            </p>
+            <blockquote class="border-l-4 border-accent pl-4 py-2 italic text-gray-300 my-4 bg-gray-800 p-4 rounded-lg shadow-inner">
+                "Do you know why black hole doesn't die?"
+            </blockquote>
+            <p class="mb-4 text-lg">
+                This implies black holes live forever, but that's not quite right! They *do* "die," but it takes an incredibly long time.
+            </p>
+
+            <h3 class="text-2xl font-semibold mb-4 text-accent">The Slow Evaporation: Hawking Radiation</h3>
+            <p class="mb-4 text-lg">
+                For a long time, black holes were thought to be eternal cosmic prisons – once something went in, it never came out, and the black hole itself never changed (except to grow larger by eating more). However, Stephen Hawking revolutionized our understanding with the concept of <span class="font-bold text-accent">Hawking Radiation</span>.
+            </p>
+            <p class="mb-4 text-lg">
+                Hawking radiation is a theoretical phenomenon where black holes slowly lose mass over time by emitting particles. This isn't due to particles escaping *from inside* the event horizon, but rather a quantum effect occurring *just outside* it.
+            </p>
+            <h4 class="text-xl font-semibold mb-3 text-accent">How it works (Simplified):</h4>
+            <ul class="list-disc list-inside ml-4 mb-4 text-lg">
+                <li class="mb-2">The vacuum of space isn't truly empty; it's teeming with "virtual particle-antiparticle pairs" constantly popping into existence and annihilating each other.</li>
+                <li class="mb-2">Near a black hole's event horizon, one particle from a pair might fall into the black hole, while its partner escapes to infinity.</li>
+                <li class="mb-2">The escaping particle effectively carries away energy (and thus mass, via \(E=mc^2\)) from the black hole.</li>
+                <li class="mb-2">From an outside observer's perspective, it looks like the black hole is emitting thermal radiation.</li>
+            </ul>
+            <p class="mb-4 text-lg">
+                <span class="font-bold text-accent">So, black holes *do* die!</span> They slowly evaporate. However, this process is incredibly slow. A black hole with the mass of our Sun would take roughly \(10^{67}\) years to evaporate – that's vastly longer than the current age of the universe (\(\approx 10^{10}\) years). Smaller black holes evaporate faster, and hypothetical "primordial" black holes (formed in the early universe) could potentially be evaporating today.
+            </p>
+            <p class="text-lg">
+                The ultimate fate of a black hole is to shrink, get hotter (as smaller black holes radiate more intensely), and eventually explode in a burst of gamma rays. But don't hold your breath for that show!
+            </p>
+        </section>
+
+        <section class="mb-12">
+            <h2 class="text-3xl md:text-4xl font-bold mb-6 gradient-heading border-b-2 border-accent pb-2">
+                4. Fourier Series: Unpacking the Coefficients
+            </h2>
+            <p class="mb-4 text-lg">
+                Max24Dark, you hit on a crucial point about Fourier series:
+            </p>
+            <blockquote class="border-l-4 border-accent pl-4 py-2 italic text-gray-300 my-4 bg-gray-800 p-4 rounded-lg shadow-inner">
+                "Fourier series, how is an and bn the coeficients of the series claculated? What happens if its discontinuos on each endpoint??"
+            </blockquote>
+            <p class="mb-4 text-lg">
+                And K.IND, you offered a suggestion:
+            </p>
+            <blockquote class="border-l-4 border-accent pl-4 py-2 italic text-gray-300 my-4 bg-gray-800 p-4 rounded-lg shadow-inner">
+                "an and bn is calculated by diffrentiating the series... we assume not iscouninous"
+            </blockquote>
+            <p class="mb-4 text-lg">
+                Let's get this straightened out.
+            </p>
+
+            <h3 class="text-2xl font-semibold mb-4 text-accent">Calculating Fourier Coefficients: The Power of Orthogonality</h3>
+            <p class="mb-4 text-lg">
+                <span class="font-bold text-accent">Correction for K.IND:</span> Fourier coefficients (\(a_n\) and \(b_n\)) are *not* calculated by differentiating the series. They are calculated using <span class="font-bold text-accent">integration</span>, specifically by leveraging the orthogonality properties of sine and cosine functions over an interval.
+            </p>
+            <p class="mb-4 text-lg">
+                A Fourier series represents a periodic function \(f(x)\) as an infinite sum of sines and cosines:
+            </p>
+            <div class="bg-gray-800 p-6 rounded-lg my-6 shadow-xl border border-gray-700">
+                <p class="font-mono text-yellow-300 bg-black p-3 rounded-md text-center text-xl mt-3">
+                    \( f(x) = \frac{a_0}{2} + \sum_{n=1}^{\infty} \left( a_n \cos\left(\frac{n\pi x}{L}\right) + b_n \sin\left(\frac{n\pi x}{L}\right) \right) \)
+                </p>
+                <p class="text-lg mt-3">
+                    For a function \(f(x)\) defined on the interval \([-L, L]\) (or any interval of length \(2L\)), the coefficients are:
+                </p>
+                <h4 class="text-xl font-bold text-accent mb-2 mt-4">The Formulas:</h4>
+                <p class="font-mono text-yellow-300 bg-black p-3 rounded-md text-left text-lg mb-2">
+                    \( a_0 = \frac{1}{L} \int_{-L}^{L} f(x) \, dx \)
+                </p>
+                <p class="font-mono text-yellow-300 bg-black p-3 rounded-md text-left text-lg mb-2">
+                    \( a_n = \frac{1}{L} \int_{-L}^{L} f(x) \cos\left(\frac{n\pi x}{L}\right) \, dx \)
+                </p>
+                <p class="font-mono text-yellow-300 bg-black p-3 rounded-md text-left text-lg">
+                    \( b_n = \frac{1}{L} \int_{-L}^{L} f(x) \sin\left(\frac{n\pi x}{L}\right) \, dx \)
+                </p>
+                <p class="text-lg mt-3">
+                    These integrals effectively "pick out" how much of each cosine and sine component is present in the function \(f(x)\).
+                </p>
+            </div>
+
+            <h3 class="text-2xl font-semibold mb-4 text-accent">What About Discontinuities?</h3>
+            <p class="mb-4 text-lg">
+                Max24Dark, you asked about discontinuities.
+                <span class="font-bold text-accent">Correction for K.IND:</span> We *don't* always assume continuity for Fourier series! Fourier series are incredibly powerful precisely because they can represent functions with discontinuities.
+            </p>
+            <p class="mb-4 text-lg">
+                If a function \(f(x)\) has a finite number of jump discontinuities on the interval \([-L, L]\) (and satisfies other Dirichlet conditions), its Fourier series will still converge.
+            </p>
+            <ul class="list-disc list-inside ml-4 mb-4 text-lg">
+                <li class="mb-2"><span class="font-bold text-accent">At points of continuity:</span> The Fourier series converges to \(f(x)\).</li>
+                <li class="mb-2"><span class="font-bold text-accent">At points of jump discontinuity:</span> The Fourier series converges to the average of the left-hand and right-hand limits at that point. That is, if there's a discontinuity at \(x_0\), the series converges to \( \frac{f(x_0^-) + f(x_0^+)}{2} \).</li>
+                <li class="mb-2"><span class="font-bold text-accent">At the endpoints of the interval \([-L, L]\):</span> The series converges to \( \frac{f(-L^+) + f(L^-)}{2} \) (assuming \(f\) is extended periodically). This addresses your specific question about discontinuities at each endpoint.</li>
+            </ul>
+            <p class="mb-4 text-lg">
+                There's also a phenomenon called the <span class="font-bold text-accent">Gibbs Phenomenon</span>, where at a jump discontinuity, the partial sums of the Fourier series will "overshoot" the function's value by about 9% on either side of the jump, even as more terms are added. The overshoot doesn't disappear, but it gets narrower.
+            </p>
+        </section>
+
+        <section class="mb-12">
+            <h2 class="text-3xl md:text-4xl font-bold mb-6 gradient-heading border-b-2 border-accent pb-2">
+                5. Power, Taylor, and Maclaurin Series: A Family Affair
+            </h2>
+            <p class="mb-4 text-lg">
+                Max24Dark and K.IND, you were discussing the relationships between these series:
+            </p>
+            <blockquote class="border-l-4 border-accent pl-4 py-2 italic text-gray-300 my-4 bg-gray-800 p-4 rounded-lg shadow-inner">
+                Max24Dark: "how is te macluarain series derived from the power series in analysis"
+            </blockquote>
+            <blockquote class="border-l-4 border-accent pl-4 py-2 italic text-gray-300 my-4 bg-gray-800 p-4 rounded-lg shadow-inner">
+                K.IND: "its derived from talor series no power series"
+            </blockquote>
+            <p class="mb-4 text-lg">
+                Both of you are partially right, but let's clarify the hierarchy and derivation.
+            </p>
+
+            <h3 class="text-2xl font-semibold mb-4 text-accent">The Family Tree: Power → Taylor → Maclaurin</h3>
+            <p class="mb-4 text-lg">
+                Think of these series like a family: Power Series is the grandparent, Taylor Series is the parent, and Maclaurin Series is the child.
+            </p>
+
+            <h4 class="text-xl font-bold text-accent mb-3">1. Power Series (The General Form)</h4>
+            <p class="mb-4 text-lg">
+                A power series is simply an infinite series of the form:
+            </p>
+            <div class="bg-gray-800 p-6 rounded-lg my-6 shadow-xl border border-gray-700">
+                <p class="font-mono text-yellow-300 bg-black p-3 rounded-md text-center text-xl mt-3">
+                    \( \sum_{n=0}^{\infty} c_n (x-a)^n = c_0 + c_1(x-a) + c_2(x-a)^2 + c_3(x-a)^3 + \dots \)
+                </p>
+                <p class="text-lg mt-3">
+                    Here, \( c_n \) are constants (coefficients), \( x \) is a variable, and \( a \) is a constant called the "center" of the series. This is the most general form of a series expressed in powers of \((x-a)\).
+                </p>
+            </div>
+
+            <h4 class="text-xl font-bold text-accent mb-3">2. Taylor Series (A Specific Kind of Power Series)</h4>
+            <p class="mb-4 text-lg">
+                A Taylor series is a *specific type* of power series where the coefficients \(c_n\) are determined by the derivatives of a function \(f(x)\) at a particular point \(a\). It's used to approximate a function \(f(x)\) around a point \(x=a\).
+            </p>
+            <p class="mb-4 text-lg">
+                The Taylor series for a function \(f(x)\) centered at \(x=a\) is:
+            </p>
+            <div class="bg-gray-800 p-6 rounded-lg my-6 shadow-xl border border-gray-700">
+                <p class="font-mono text-yellow-300 bg-black p-3 rounded-md text-center text-xl mt-3">
+                    \( f(x) = \sum_{n=0}^{\infty} \frac{f^{(n)}(a)}{n!} (x-a)^n \)
+                </p>
+                <p class="font-mono text-yellow-300 bg-black p-3 rounded-md text-center text-xl mt-3">
+                    \( f(x) = f(a) + f'(a)(x-a) + \frac{f''(a)}{2!}(x-a)^2 + \frac{f'''(a)}{3!}(x-a)^3 + \dots \)
+                </p>
+                <p class="text-lg mt-3">
+                    Here, \( f^{(n)}(a) \) is the \(n\)-th derivative of \(f(x)\) evaluated at \(x=a\).
+                </p>
+            </div>
+            <p class="mb-4 text-lg">
+                <span class="font-bold text-accent">So, to Max24Dark's question:</span> A Taylor series *is* a power series, but with its coefficients specifically defined by the function's derivatives.
+            </p>
+
+            <h4 class="text-xl font-bold text-accent mb-3">3. Maclaurin Series (A Special Taylor Series)</h4>
+            <p class="mb-4 text-lg">
+                <span class="font-bold text-accent">Correction for K.IND:</span> You're right that the Maclaurin series is derived from the Taylor series! It's actually a special case of the Taylor series where the center point \(a\) is set to \(0\).
+            </p>
+            <p class="mb-4 text-lg">
+                The Maclaurin series for a function \(f(x)\) is simply the Taylor series centered at \(x=0\):
+            </p>
+            <div class="bg-gray-800 p-6 rounded-lg my-6 shadow-xl border border-gray-700">
+                <p class="font-mono text-yellow-300 bg-black p-3 rounded-md text-center text-xl mt-3">
+                    \( f(x) = \sum_{n=0}^{\infty} \frac{f^{(n)}(0)}{n!} x^n \)
+                </p>
+                <p class="font-mono text-yellow-300 bg-black p-3 rounded-md text-center text-xl mt-3">
+                    \( f(x) = f(0) + f'(0)x + \frac{f''(0)}{2!}x^2 + \frac{f'''(0)}{3!}x^3 + \dots \)
+                </p>
+            </div>
+            <p class="mb-4 text-lg">
+                <span class="font-bold text-accent">In summary:</span>
+                <ul class="list-disc list-inside ml-4 mb-4 text-lg">
+                    <li class="mb-2">A <span class="font-bold text-accent">Power Series</span> is the most general form.</li>
+                    <li class="mb-2">A <span class="font-bold text-accent">Taylor Series</span> is a power series where the coefficients are determined by the derivatives of a function at a specific point \(a\).</li>
+                    <li class="mb-2">A <span class="font-bold text-accent">Maclaurin Series</span> is a Taylor series where the specific point \(a\) is \(0\).</li>
+                </ul>
+                So, Max24Dark, the Maclaurin series *is* a power series, but it's more directly derived as a special case of the Taylor series. K.IND, you were spot on that it's derived from the Taylor series!
+            </p>
+        </section>
+
+        <section class="mb-12">
+            <h2 class="text-3xl md:text-4xl font-bold mb-6 gradient-heading border-b-2 border-accent pb-2">
+                6. Uniform Continuity (Bonus Round!)
+            </h2>
+            <p class="mb-4 text-lg">
+                Max24Dark, you also asked:
+            </p>
+            <blockquote class="border-l-4 border-accent pl-4 py-2 italic text-gray-300 my-4 bg-gray-800 p-4 rounded-lg shadow-inner">
+                "how does a bounded domain function which is cinoues of the bounded interval imply it is uniformwaly continuos"
+            </blockquote>
+            <p class="mb-4 text-lg">
+                This is a fundamental theorem in real analysis!
+            </p>
+
+            <h3 class="text-2xl font-semibold mb-4 text-accent">Heine-Cantor Theorem: Continuity on Compact Intervals Implies Uniform Continuity</h3>
+            <p class="mb-4 text-lg">
+                The statement you're referring to is a direct consequence of the <span class="font-bold text-accent">Heine-Cantor Theorem</span>. It states:
+            </p>
+            <div class="bg-gray-800 p-6 rounded-lg my-6 shadow-xl border border-gray-700">
+                <p class="text-lg italic text-yellow-300">
+                    If a function \(f\) is continuous on a compact set \(K\) (a closed and bounded set) in a metric space, then \(f\) is uniformly continuous on \(K\).
+                </p>
+            </div>
+            <p class="mb-4 text-lg">
+                For functions on the real line (\(\mathbb{R}\)), a "bounded interval" that is also "closed" (e.g., \([a,b]\)) is a compact set.
+            </p>
+            <h4 class="text-xl font-semibold mb-3 text-accent">Why is this important?</h4>
+            <ul class="list-disc list-inside ml-4 mb-4 text-lg">
+                <li class="mb-2"><span class="font-bold text-accent">Continuity:</span> For a function to be continuous at a point \(x_0\), for any small "tolerance" \(\epsilon > 0\), you can find a "neighborhood size" \(\delta > 0\) such that if \(x\) is within \(\delta\) of \(x_0\), then \(f(x)\) is within \(\epsilon\) of \(f(x_0)\). Crucially, this \(\delta\) can depend on \(x_0\).</li>
+                <li class="mb-2"><span class="font-bold text-accent">Uniform Continuity:</span> For a function to be uniformly continuous on an interval, for any \(\epsilon > 0\), you can find *one single* \(\delta > 0\) that works for *all* points \(x_0\) in the interval. This means the function doesn't get "infinitely steep" or "wildly oscillating" as you approach certain points within the interval, which would force \(\delta\) to get arbitrarily small.</li>
+            </ul>
+            <p class="mb-4 text-lg">
+                The Heine-Cantor theorem essentially says that on a closed and bounded interval, a continuous function cannot behave "badly" enough (like \(1/x\) near \(0\)) to prevent a single \(\delta\) from working everywhere. The compactness of the domain "constrains" the function's behavior, preventing it from having those problematic points where \(\delta\) would need to be infinitesimally small.
+            </p>
+        </section>
+
+        <section class="mb-12">
+            <h2 class="text-3xl md:text-4xl font-bold mb-6 gradient-heading border-b-2 border-accent pb-2">
+                TL;DR Printable Notes
+            </h2>
+            <div class="bg-gray-800 p-6 rounded-lg shadow-xl border border-gray-700">
+                <ul class="list-disc list-inside ml-4 text-lg space-y-3">
+                    <li><span class="font-bold text-accent">Quantum Superposition:</span> A quantum system exists in a combination of states (e.g., spin up & down). Not a macroscopic object being in two places at once. Applies to particles, not entire black holes.</li>
+                    <li><span class="font-bold text-accent">Orbital Mechanics:</span> Earth stays in orbit because its sideways velocity balances the Sun's gravitational pull. It's constantly falling *around* the Sun, not *into* it.</li>
+                    <li><span class="font-bold text-accent">Black Hole Lifespan:</span> Black holes *do* "die" via <span class="font-bold text-accent">Hawking Radiation</span>, slowly losing mass from quantum effects near the event horizon. This process is extremely slow for most black holes.</li>
+                    <li><span class="font-bold text-accent">Fourier Coefficients (\(a_n, b_n\)):</span> Calculated using <span class="font-bold text-accent">integration</span> (orthogonality), not differentiation.</li>
+                    <li><span class="font-bold text-accent">Fourier Series Discontinuities:</span> Series converges to the <span class="font-bold text-accent">average of the left and right limits</span> at a jump discontinuity, including endpoints (periodic extension).</li>
+                    <li><span class="font-bold text-accent">Series Hierarchy:</span>
+                        <ul>
+                            <li class="ml-4"><span class="font-bold text-accent">Power Series:</span> General form \( \sum c_n (x-a)^n \).</li>
+                            <li class="ml-4"><span class="font-bold text-accent">Taylor Series:</span> A power series where \( c_n = \frac{f^{(n)}(a)}{n!} \). (Centered at \(a\)).</li>
+                            <li class="ml-4"><span class="font-bold text-accent">Maclaurin Series:</span> A Taylor series specifically centered at \(a=0\).</li>
+                        </ul>
+                    </li>
+                    <li><span class="font-bold text-accent">Uniform Continuity:</span> A function continuous on a closed and bounded interval (a compact set) is necessarily uniformly continuous on that interval (Heine-Cantor Theorem).</li>
+                </ul>
+            </div>
+        </section>
+
+        <footer class="text-center mt-12 text-gray-500 text-sm">
+            <p>Generated by panikbot, saving grades one ping at a time</p>
+        </footer>
+
+        <!-- Print Button -->
+        <button onclick="window.print()" class="print-hidden fixed bottom-6 right-6 bg-accent hover:bg-yellow-600 text-black font-bold py-3 px-6 rounded-full shadow-lg transition-all duration-300 ease-in-out transform hover:scale-105">
+            🖨️ Print Study Guide
+        </button>
+    </div>
+
+</body>
+</html>
