@@ -1,0 +1,436 @@
+import os
+import json
+import re
+import io
+from datetime import datetime, timedelta
+from collections import Counter
+from typing import Dict, Any, List
+
+import discord
+from discord.ext import commands
+from dotenv import load_dotenv
+
+load_dotenv()
+
+SETTINGS_FILE = "settings.json"
+
+intents = discord.Intents.default()
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+# ─────────────────────────────────────────
+# Settings helpers
+# ─────────────────────────────────────────
+
+def load_settings() -> Dict[str, Any]:
+    if not os.path.exists(SETTINGS_FILE):
+        return {}
+    with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_settings(settings: Dict[str, Any]):
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+
+
+def get_guild_settings(guild_id: int) -> Dict[str, Any]:
+    settings = load_settings()
+    guild_key = str(guild_id)
+    if guild_key not in settings:
+        settings[guild_key] = {
+            "hours": 24,
+            "channels": [],
+            "output_format": "summary",
+            "keyword_filters": []
+        }
+        save_settings(settings)
+    return settings[guild_key]
+
+
+def set_guild_setting(guild_id: int, key: str, value: Any):
+    settings = load_settings()
+    settings.setdefault(str(guild_id), {})[key] = value
+    save_settings(settings)
+
+
+# ─────────────────────────────────────────
+# PII cleaning
+# ─────────────────────────────────────────
+
+PII_PATTERNS = [
+    ("email",          re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")),
+    ("credit_card",    re.compile(r"\b(?:\d[ -]*?){13,16}\b")),
+    ("phone",          re.compile(r"\b(?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{2,4}\)?[-.\s]?){1,3}\d{2,4}\b")),
+    ("passport_label", re.compile(r"(?i)\bpassport\s*(?:no\.?|number|#)?[:\s]*([A-Z0-9-]{5,12})\b")),
+]
+
+
+def clean_text(text: str) -> str:
+    if not text:
+        return text
+    cleaned = text
+    for name, pattern in PII_PATTERNS:
+        if name == "passport_label":
+            cleaned = pattern.sub("[REDACTED_PASSPORT]", cleaned)
+        else:
+            cleaned = pattern.sub(lambda m, n=name: f"[REDACTED_{n.upper()}]", cleaned)
+    return cleaned
+
+
+# ─────────────────────────────────────────
+# UI Components
+# ─────────────────────────────────────────
+
+class HoursSelect(discord.ui.Select):
+    def __init__(self, guild_id: int):
+        self.guild_id = guild_id
+        options = [
+            discord.SelectOption(label="1 hour",   value="1"),
+            discord.SelectOption(label="6 hours",  value="6"),
+            discord.SelectOption(label="12 hours", value="12"),
+            discord.SelectOption(label="24 hours", value="24", default=True),
+            discord.SelectOption(label="48 hours", value="48"),
+        ]
+        super().__init__(
+            placeholder="⏱️ Select time window...",
+            min_values=1, max_values=1,
+            options=options, row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        hours = int(self.values[0])
+        set_guild_setting(self.guild_id, "hours", hours)
+        await interaction.response.send_message(
+            f"✅ Time window set to **{hours} hour(s)**.", ephemeral=True
+        )
+
+
+class OutputFormatSelect(discord.ui.Select):
+    def __init__(self, guild_id: int):
+        self.guild_id = guild_id
+        options = [
+            discord.SelectOption(label="Summary", value="summary", description="Condensed overview"),
+            discord.SelectOption(label="Raw",     value="raw",     description="Full cleaned messages"),
+        ]
+        super().__init__(
+            placeholder="📄 Output format...",
+            min_values=1, max_values=1,
+            options=options, row=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        fmt = self.values[0]
+        set_guild_setting(self.guild_id, "output_format", fmt)
+        await interaction.response.send_message(
+            f"✅ Output format set to **{fmt}**.", ephemeral=True
+        )
+
+
+class KeywordModal(discord.ui.Modal, title="Set Keyword Filters"):
+    keywords = discord.ui.TextInput(
+        label="Keywords (comma-separated)",
+        placeholder="e.g. budget, launch, deadline",
+        required=False,
+        max_length=300
+    )
+
+    def __init__(self, guild_id: int):
+        super().__init__()
+        self.guild_id = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = self.keywords.value
+        kw_list = [k.strip() for k in raw.split(",") if k.strip()]
+        set_guild_setting(self.guild_id, "keyword_filters", kw_list)
+        if kw_list:
+            await interaction.response.send_message(
+                f"✅ Keyword filters set: **{', '.join(kw_list)}**", ephemeral=True
+            )
+        else:
+            await interaction.response.send_message("✅ Keyword filters cleared.", ephemeral=True)
+
+
+class ChannelSelectView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.add_item(ChannelMultiSelect(guild_id))
+
+
+class ChannelMultiSelect(discord.ui.ChannelSelect):
+    def __init__(self, guild_id: int):
+        self.guild_id = guild_id
+        super().__init__(
+            placeholder="📡 Pick channels to analyze (leave empty = all)",
+            min_values=0,
+            max_values=10,
+            channel_types=[discord.ChannelType.text],
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        channel_ids = [str(c.id) for c in self.values]
+        set_guild_setting(self.guild_id, "channels", channel_ids)
+        if channel_ids:
+            names = ", ".join([f"<#{cid}>" for cid in channel_ids])
+            await interaction.response.send_message(
+                f"✅ Analyzing channels: {names}", ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                "✅ Will analyze **all channels**.", ephemeral=True
+            )
+
+
+class SettingsView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.add_item(HoursSelect(guild_id))
+        self.add_item(OutputFormatSelect(guild_id))
+
+    @discord.ui.button(label="🔑 Set Keywords", style=discord.ButtonStyle.secondary, row=2)
+    async def set_keywords(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(KeywordModal(self.guild_id))
+
+    @discord.ui.button(label="📡 Pick Channels", style=discord.ButtonStyle.secondary, row=2)
+    async def pick_channels(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = ChannelSelectView(self.guild_id)
+        await interaction.response.send_message(
+            "Select the channels you want panikbot to analyze:", view=view, ephemeral=True
+        )
+
+    @discord.ui.button(label="🔍 Run Analysis Now", style=discord.ButtonStyle.primary, row=3)
+    async def run_analysis(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await do_analysis(interaction.channel, interaction.guild, interaction.user)
+
+    @discord.ui.button(label="📋 Show Current Settings", style=discord.ButtonStyle.secondary, row=3)
+    async def show_settings_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await send_settings_embed(interaction.guild.id, interaction.response.send_message, ephemeral=True)
+
+
+# ─────────────────────────────────────────
+# Shared helpers
+# ─────────────────────────────────────────
+
+async def send_settings_embed(guild_id: int, send_fn, ephemeral=False):
+    gs      = get_guild_settings(guild_id)
+    hours   = gs.get("hours", 24)
+    fmt     = gs.get("output_format", "summary")
+    kws     = gs.get("keyword_filters", [])
+    chans   = gs.get("channels", [])
+    chan_str = ", ".join([f"<#{c}>" for c in chans]) if chans else "All channels"
+    kw_str  = ", ".join(kws) if kws else "None"
+
+    embed = discord.Embed(title="⚙️ PanikBot — Current Settings", color=0x5865F2)
+    embed.add_field(name="⏱️ Time Window",     value=f"{hours} hour(s)", inline=True)
+    embed.add_field(name="📄 Output Format",   value=fmt.capitalize(),   inline=True)
+    embed.add_field(name="📡 Channels",        value=chan_str,            inline=False)
+    embed.add_field(name="🔑 Keyword Filters", value=kw_str,             inline=False)
+    embed.set_footer(text="Use !changesettings time <n> to update, or @panikbot for the full menu.")
+
+    if ephemeral:
+        await send_fn(embed=embed, ephemeral=True)
+    else:
+        await send_fn(embed=embed)
+
+
+async def do_analysis(channel, guild, requester, topic: str = None):
+    guild_settings   = get_guild_settings(guild.id)
+    hours            = guild_settings.get("hours", 24)
+    output_format    = guild_settings.get("output_format", "summary")
+    keyword_filters  = guild_settings.get("keyword_filters", [])
+    allowed_channels = guild_settings.get("channels", [])
+
+    search_terms = [topic] if topic else keyword_filters
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+
+    if allowed_channels:
+        channels_to_scan = [guild.get_channel(int(cid)) for cid in allowed_channels if guild.get_channel(int(cid))]
+    else:
+        channels_to_scan = [ch for ch in guild.text_channels if ch.permissions_for(guild.me).read_message_history]
+
+    messages_cleaned: List[str] = []
+    total_count = 0
+
+    for ch in channels_to_scan:
+        try:
+            async for msg in ch.history(limit=2000, after=cutoff):
+                if msg.author.bot:
+                    continue
+                cleaned = clean_text(msg.content)
+                if not cleaned.strip():
+                    continue
+                if search_terms:
+                    if not any(term.lower() in cleaned.lower() for term in search_terms):
+                        continue
+                messages_cleaned.append(f"[#{ch.name}] {msg.author.display_name}: {cleaned}")
+                total_count += 1
+        except discord.Forbidden:
+            continue
+
+    title = f"📊 Topic Search: \"{topic}\"" if topic else f"📊 Analysis — Last {hours} Hour(s)"
+
+    if total_count == 0:
+        await channel.send(f"No messages found{f' about **{topic}**' if topic else ''} in the last **{hours} hours**.")
+        return
+
+    embed = discord.Embed(title=title, color=0x57F287, timestamp=datetime.now(datetime.timezone.utc))
+    embed.set_footer(text=f"Requested by {requester.display_name} · PII redacted")
+    embed.add_field(name="Messages found", value=str(total_count), inline=True)
+    embed.add_field(name="Format",         value=output_format.capitalize(), inline=True)
+    if search_terms:
+        embed.add_field(name="🔍 Searching for", value=", ".join(search_terms), inline=False)
+
+    if output_format == "summary" and not topic:
+        authors = [m.split("] ")[1].split(":")[0] for m in messages_cleaned]
+        top     = Counter(authors).most_common(5)
+        top_str = "\n".join([f"**{a}**: {c} msg(s)" for a, c in top])
+        embed.add_field(name="🗣️ Most Active Users", value=top_str or "N/A", inline=False)
+
+    sample = "\n".join(messages_cleaned[:5])
+    if len(sample) > 1000:
+        sample = sample[:1000] + "\n...[truncated]"
+    embed.add_field(name="📝 Sample Messages", value=f"```{sample}```", inline=False)
+
+    if output_format == "raw" or topic:
+        raw_text   = "\n".join(messages_cleaned)
+        file_bytes = raw_text.encode("utf-8")
+        file = discord.File(fp=io.BytesIO(file_bytes), filename="results.txt")
+        await channel.send(embed=embed, file=file)
+    else:
+        await channel.send(embed=embed)
+
+
+# ─────────────────────────────────────────
+# Commands
+# ─────────────────────────────────────────
+
+@bot.command(name="helpnow")
+async def helpnow_cmd(ctx):
+    embed = discord.Embed(
+        title="🤖 PanikBot — Commands",
+        description="Here's everything I can do:",
+        color=0x5865F2
+    )
+    embed.add_field(
+        name="📋 `!showsettings`",
+        value="Show the current bot settings for this server.",
+        inline=False
+    )
+    embed.add_field(
+        name="⏱️ `!changesettings time <hours>`",
+        value="Change how far back to scan messages.\nExample: `!changesettings time 12`",
+        inline=False
+    )
+    embed.add_field(
+        name="🔍 `!saveus`",
+        value="Run a full analysis of messages based on your current settings.",
+        inline=False
+    )
+    embed.add_field(
+        name="💬 `!helpus <topic>`",
+        value="Search all messages for a specific topic and return matching messages + a full results file.\nExample: `!helpus project deadline`",
+        inline=False
+    )
+    embed.add_field(
+        name="⚙️ `@panikbot`",
+        value="Mention me to open the full interactive settings menu with dropdowns and buttons.",
+        inline=False
+    )
+    embed.set_footer(text="PanikBot · PII is always redacted from results")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="helpus")
+async def helpus_cmd(ctx, *, topic: str = None):
+    if ctx.guild is None:
+        await ctx.send("Run this in a server channel.")
+        return
+    if not topic:
+        await ctx.send("Please provide a topic.\nExample: `!helpus project deadline`")
+        return
+    await ctx.send(f"🔍 Searching messages for **{topic}**...")
+    await do_analysis(ctx.channel, ctx.guild, ctx.author, topic=topic)
+
+
+@bot.command(name="showsettings")
+async def showsettings_cmd(ctx):
+    if ctx.guild is None:
+        await ctx.send("Settings are per-server; run this in a server channel.")
+        return
+    await send_settings_embed(ctx.guild.id, ctx.send)
+
+
+@bot.command(name="changesettings")
+async def changesettings_cmd(ctx, setting: str = None, *, value: str = None):
+    if ctx.guild is None:
+        await ctx.send("Run this in a server channel.")
+        return
+    if setting is None or value is None:
+        await ctx.send("Usage: `!changesettings time <hours>`\nExample: `!changesettings time 12`")
+        return
+    if setting.lower() == "time":
+        try:
+            hours = int(value)
+            if hours <= 0:
+                raise ValueError()
+            set_guild_setting(ctx.guild.id, "hours", hours)
+            await ctx.send(f"✅ Time window updated to **{hours} hour(s)**.")
+        except ValueError:
+            await ctx.send("❌ Please provide a positive number.\nExample: `!changesettings time 12`")
+    else:
+        await ctx.send(f"❌ Unknown setting `{setting}`.\nAvailable: `time` — or use `@panikbot` for the full settings menu.")
+
+
+@bot.command(name="saveus")
+async def saveus_cmd(ctx):
+    if ctx.guild is None:
+        await ctx.send("Run this in a server channel.")
+        return
+    await ctx.send("🔍 Running analysis...")
+    await do_analysis(ctx.channel, ctx.guild, ctx.author)
+
+
+# ─────────────────────────────────────────
+# Events
+# ─────────────────────────────────────────
+
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    print("Ready! Type !help in Discord to see all commands.")
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+    if bot.user in message.mentions and not message.content.strip().startswith("!"):
+        if message.guild is None:
+            await message.channel.send("Mention me in a server channel to open settings.")
+            return
+        embed = discord.Embed(
+            title="⚙️ PanikBot Settings",
+            description="Use the dropdowns and buttons below to configure me.\nAll changes are saved instantly.",
+            color=0x5865F2
+        )
+        view = SettingsView(message.guild.id)
+        await message.channel.send(embed=embed, view=view)
+        return
+    await bot.process_commands(message)
+
+
+# ─────────────────────────────────────────
+# Run
+# ─────────────────────────────────────────
+
+if __name__ == "__main__":
+    token = os.environ.get("DISCORD_TOKEN")
+    if not token:
+        print("Set the DISCORD_TOKEN environment variable to run the bot.")
+    else:
+        bot.run(token)
