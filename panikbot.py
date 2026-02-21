@@ -2,9 +2,11 @@ import os
 import json
 import re
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import Counter
 from typing import Dict, Any, List
+from .gemini_ai import analyze_chat, generate_html_resource
+from .notioner import upload_html_and_get_object_url
 
 import discord
 from discord.ext import commands
@@ -246,14 +248,14 @@ async def do_analysis(channel, guild, requester, topic: str = None):
     allowed_channels = guild_settings.get("channels", [])
 
     search_terms = [topic] if topic else keyword_filters
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     if allowed_channels:
         channels_to_scan = [guild.get_channel(int(cid)) for cid in allowed_channels if guild.get_channel(int(cid))]
     else:
         channels_to_scan = [ch for ch in guild.text_channels if ch.permissions_for(guild.me).read_message_history]
 
-    messages_cleaned: List[str] = []
+    messages_cleaned: List[tuple] = []  # (channel_name, author_name, cleaned_text)
     total_count = 0
 
     for ch in channels_to_scan:
@@ -261,13 +263,16 @@ async def do_analysis(channel, guild, requester, topic: str = None):
             async for msg in ch.history(limit=2000, after=cutoff):
                 if msg.author.bot:
                     continue
-                cleaned = clean_text(msg.content)
+                try:
+                    cleaned = clean_text(msg.content)
+                except Exception:
+                    continue
                 if not cleaned.strip():
                     continue
                 if search_terms:
                     if not any(term.lower() in cleaned.lower() for term in search_terms):
                         continue
-                messages_cleaned.append(f"[#{ch.name}] {msg.author.display_name}: {cleaned}")
+                messages_cleaned.append((ch.name, msg.author.display_name, cleaned))
                 total_count += 1
         except discord.Forbidden:
             continue
@@ -278,7 +283,7 @@ async def do_analysis(channel, guild, requester, topic: str = None):
         await channel.send(f"No messages found{f' about **{topic}**' if topic else ''} in the last **{hours} hours**.")
         return
 
-    embed = discord.Embed(title=title, color=0x57F287, timestamp=datetime.now(datetime.timezone.utc))
+    embed = discord.Embed(title=title, color=0x57F287, timestamp=datetime.now(timezone.utc))
     embed.set_footer(text=f"Requested by {requester.display_name} · PII redacted")
     embed.add_field(name="Messages found", value=str(total_count), inline=True)
     embed.add_field(name="Format",         value=output_format.capitalize(), inline=True)
@@ -286,18 +291,19 @@ async def do_analysis(channel, guild, requester, topic: str = None):
         embed.add_field(name="🔍 Searching for", value=", ".join(search_terms), inline=False)
 
     if output_format == "summary" and not topic:
-        authors = [m.split("] ")[1].split(":")[0] for m in messages_cleaned]
+        authors = [author for _, author, _ in messages_cleaned]
         top     = Counter(authors).most_common(5)
         top_str = "\n".join([f"**{a}**: {c} msg(s)" for a, c in top])
         embed.add_field(name="🗣️ Most Active Users", value=top_str or "N/A", inline=False)
 
-    sample = "\n".join(messages_cleaned[:5])
+    sample_lines = [f"[#{ch}] {author}: {text}" for ch, author, text in messages_cleaned[:5]]
+    sample = "\n".join(sample_lines)
     if len(sample) > 1000:
         sample = sample[:1000] + "\n...[truncated]"
     embed.add_field(name="📝 Sample Messages", value=f"```{sample}```", inline=False)
 
     if output_format == "raw" or topic:
-        raw_text   = "\n".join(messages_cleaned)
+        raw_text   = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_cleaned])
         file_bytes = raw_text.encode("utf-8")
         file = discord.File(fp=io.BytesIO(file_bytes), filename="results.txt")
         await channel.send(embed=embed, file=file)
@@ -391,8 +397,114 @@ async def saveus_cmd(ctx):
     if ctx.guild is None:
         await ctx.send("Run this in a server channel.")
         return
-    await ctx.send("🔍 Running analysis...")
-    await do_analysis(ctx.channel, ctx.guild, ctx.author)
+
+    guild_settings   = get_guild_settings(ctx.guild.id)
+    hours            = guild_settings.get("hours", 24)
+    allowed_channels = guild_settings.get("channels", [])
+    keyword_filters  = guild_settings.get("keyword_filters", [])
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    if allowed_channels:
+        channels_to_scan = [ctx.guild.get_channel(int(cid)) for cid in allowed_channels if ctx.guild.get_channel(int(cid))]
+    else:
+        channels_to_scan = [ch for ch in ctx.guild.text_channels if ch.permissions_for(ctx.guild.me).read_message_history]
+
+    messages_collected: List[tuple] = []
+
+    for ch in channels_to_scan:
+        try:
+            async for msg in ch.history(limit=2000, after=cutoff):
+                if msg.author.bot:
+                    continue
+                try:
+                    cleaned = clean_text(msg.content)
+                except Exception:
+                    continue
+                if not cleaned.strip():
+                    continue
+                if keyword_filters:
+                    if not any(kw.lower() in cleaned.lower() for kw in keyword_filters):
+                        continue
+                messages_collected.append((ch.name, msg.author.display_name, cleaned))
+        except discord.Forbidden:
+            continue
+
+    if not messages_collected:
+        await ctx.send(f"No messages found in the last **{hours} hours**.")
+        return
+
+    chat_history = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_collected])
+
+    await ctx.send(f"📨 Collected **{len(messages_collected)}** messages. Analysing with Gemini...")
+
+    try:
+        result = analyze_chat(chat_history)
+    except Exception as e:
+        await ctx.send(f"❌ Gemini analysis failed: {e}")
+        return
+
+    action  = result.get("action_required", "")
+    summary = result.get("summary_message", "No summary returned.")
+    topics  = result.get("topics_to_explain", [])
+    level   = result.get("student_level", "Unknown")
+    subject = result.get("subject_area", "Unknown")
+
+    prompt_msg = (
+        f"**📊 Analysis Complete**\n\n"
+        f"{summary}\n\n"
+        f"{'👉 Would you like me to generate a study guide for these topics? **(Yes/No)**' if action == 'explain' else '🔒 Time to lock in!'}"
+    )
+    await ctx.send(prompt_msg)
+
+    if action != "explain" or not topics:
+        return
+
+    def check(m):
+        return (
+            m.author == ctx.author
+            and m.channel == ctx.channel
+            and m.content.strip().lower() in ("yes", "no")
+        )
+
+    try:
+        reply = await bot.wait_for("message", check=check, timeout=60.0)
+    except TimeoutError:
+        await ctx.send("⏰ No response received. Skipping study guide generation.")
+        return
+
+    if reply.content.strip().lower() == "no":
+        await ctx.send("👍 No problem! Let me know if you need anything else.")
+        return
+
+    await ctx.send("📝 Generating your study guide, hang tight...")
+
+    try:
+        file_path = generate_html_resource(
+            chat_history=chat_history,
+            topics=topics,
+            student_level=level,
+            subject_area=subject
+        )
+    except Exception as e:
+        await ctx.send(f"❌ Study guide generation failed: {e}")
+        return
+
+    # Upload to S3 and get a URL
+    await ctx.send("☁️ Uploading to S3...")
+
+    try:
+        upload_result = upload_html_and_get_object_url(file_path)
+    except Exception as e:
+        await ctx.send(f"❌ Upload failed: {e}")
+        return
+
+    if not upload_result.get("success"):
+        await ctx.send(f"❌ Upload failed: {upload_result.get('error', 'Unknown error')}")
+        return
+
+    detail = upload_result.get("detail", "Study guide uploaded successfully.")
+    await ctx.send(f"✅ {detail}")
 
 
 # ─────────────────────────────────────────

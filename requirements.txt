@@ -1,8 +1,0 @@
-python-dotenv
-google-genai
-pydantic
-boto3
-requests
-pytest
-discord.py>=2.0.0
-pytest>=7.0.0
