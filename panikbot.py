@@ -366,12 +366,13 @@ async def helpus_cmd(ctx, *, topic: str = None):
         await ctx.send("Please provide a topic.\nExample: `!helpus project deadline`")
         return
 
-    await ctx.send(f"🔍 Searching messages about **{topic}**...")
+    await ctx.send(f"📚 Topic: **{topic}**...")
 
-    guild_settings   = get_guild_settings(ctx.guild.id)
-    hours            = guild_settings.get("hours", 24)
+    guild_settings = get_guild_settings(ctx.guild.id)
+    hours          = guild_settings.get("hours", 24)
     allowed_channels = guild_settings.get("channels", [])
 
+    # Still collect recent chat for context, but don't filter by topic
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     if allowed_channels:
@@ -383,8 +384,10 @@ async def helpus_cmd(ctx, *, topic: str = None):
 
     for ch in channels_to_scan:
         try:
-            async for msg in ch.history(limit=2000, after=cutoff):
+            async for msg in ch.history(limit=500, after=cutoff):
                 if msg.author.bot:
+                    continue
+                if msg.content.strip().startswith("!"):
                     continue
                 try:
                     cleaned = clean_text(msg.content)
@@ -392,78 +395,22 @@ async def helpus_cmd(ctx, *, topic: str = None):
                     continue
                 if not cleaned.strip():
                     continue
-                if not topic.lower() in cleaned.lower():
-                    continue
                 messages_collected.append((ch.name, msg.author.display_name, cleaned))
         except discord.Forbidden:
             continue
 
-    if not messages_collected:
-        await ctx.send(f"No messages found about **{topic}** in the last **{hours} hours**.")
-        return
+    # Build chat history for context (or use empty string if none)
+    chat_history = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_collected])
 
-    chat_history_raw = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_collected])
-
-    # Debug: always show the raw messages the bot found
-    debug_msg = f"🔎 **Messages found ({len(messages_collected)}):**\n{chat_history_raw}"
-    await ctx.send(debug_msg[:2000] + ("\n...[truncated]" if len(debug_msg) > 2000 else ""))
-
-    chat_history = strip_bot_commands(chat_history_raw)
-
-    await ctx.send(f"📨 Found **{len(messages_collected)}** messages about **{topic}**. Analysing with Gemini...")
-
-    try:
-        result = await asyncio.to_thread(analyze_chat, chat_history)
-    except Exception as e:
-        await ctx.send(f"❌ Gemini analysis failed: {e}")
-        return
-
-    action  = result.get("action_required", "")
-    summary = result.get("summary_message", "No summary returned.")
-    topics  = result.get("topics_to_explain", [])
-    level   = result.get("student_level", "Unknown")
-    subject = result.get("subject_area", "Unknown")
-
-    # For !helpus, always include the user's topic even if Gemini didn't detect misconceptions
-    if topic and topic not in topics:
-        topics.insert(0, topic)
-
-    prompt_msg = (
-        f"**📊 Analysis Complete**\n\n"
-        f"{summary}\n\n"
-        f"{'👉 Would you like me to generate a study guide for these topics? **(Yes/No)**' if topics else '🔒 Time to lock in!'}"
-    )
-    await ctx.send(prompt_msg)
-
-    if not topics:
-        return
-
-    def check_next(m):
-        return m.channel == ctx.channel and not m.author.bot
-
-    try:
-        reply = await bot.wait_for("message", check=check_next, timeout=60.0)
-    except asyncio.TimeoutError:
-        await ctx.send("⏰ No response received. Skipping study guide generation.")
-        return
-
-    if reply.author != ctx.author or reply.content.strip().lower() not in ("yes", "no"):
-        await ctx.send(f"⚠️ I needed a **Yes/No** from {ctx.author.mention} as the very next message. Please run `!helpus {topic}` again.")
-        return
-
-    if reply.content.strip().lower() == "no":
-        await ctx.send("👍 No problem! Let me know if you need anything else.")
-        return
-
-    await ctx.send("📝 Generating your study guide, hang tight...")
+    await ctx.send(f"📝 Generating your study guide for **{topic}**, hang tight...")
 
     try:
         file_path = await asyncio.to_thread(
             generate_html_resource,
             chat_history=chat_history,
-            topics=topics,
-            student_level=level,
-            subject_area=subject
+            topics=[topic],
+            student_level="Unknown",
+            subject_area=topic
         )
     except Exception as e:
         await ctx.send(f"❌ Study guide generation failed: {e}")
