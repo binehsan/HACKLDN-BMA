@@ -2,10 +2,11 @@ import os
 import json
 import re
 import io
+import asyncio
 from datetime import datetime, timedelta, timezone
 from collections import Counter
 from typing import Dict, Any, List
-from gemini_ai import analyze_chat, generate_html_resource
+from gemini_ai import analyze_chat, generate_html_resource, generate_quiz
 from notioner import upload_html_and_get_object_url
 
 import discord
@@ -343,6 +344,11 @@ async def helpnow_cmd(ctx):
         inline=False
     )
     embed.add_field(
+        name="🧠 `!quiz`",
+        value="Generate a 5-question quiz from recent chat + study guides. Answer via polls, then type `!answers` to reveal results.",
+        inline=False
+    )
+    embed.add_field(
         name="⚙️ `@panikbot`",
         value="Mention me to open the full interactive settings menu with dropdowns and buttons.",
         inline=False
@@ -359,8 +365,119 @@ async def helpus_cmd(ctx, *, topic: str = None):
     if not topic:
         await ctx.send("Please provide a topic.\nExample: `!helpus project deadline`")
         return
-    await ctx.send(f"🔍 Searching messages for **{topic}**...")
-    await do_analysis(ctx.channel, ctx.guild, ctx.author, topic=topic)
+
+    await ctx.send(f"🔍 Searching messages about **{topic}**...")
+
+    guild_settings   = get_guild_settings(ctx.guild.id)
+    hours            = guild_settings.get("hours", 24)
+    allowed_channels = guild_settings.get("channels", [])
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    if allowed_channels:
+        channels_to_scan = [ctx.guild.get_channel(int(cid)) for cid in allowed_channels if ctx.guild.get_channel(int(cid))]
+    else:
+        channels_to_scan = [ch for ch in ctx.guild.text_channels if ch.permissions_for(ctx.guild.me).read_message_history]
+
+    messages_collected: List[tuple] = []
+
+    for ch in channels_to_scan:
+        try:
+            async for msg in ch.history(limit=2000, after=cutoff):
+                if msg.author.bot:
+                    continue
+                try:
+                    cleaned = clean_text(msg.content)
+                except Exception:
+                    continue
+                if not cleaned.strip():
+                    continue
+                if not topic.lower() in cleaned.lower():
+                    continue
+                messages_collected.append((ch.name, msg.author.display_name, cleaned))
+        except discord.Forbidden:
+            continue
+
+    if not messages_collected:
+        await ctx.send(f"No messages found about **{topic}** in the last **{hours} hours**.")
+        return
+
+    chat_history = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_collected])
+    chat_history = strip_bot_commands(chat_history)
+
+    await ctx.send(f"📨 Found **{len(messages_collected)}** messages about **{topic}**. Analysing with Gemini...")
+
+    try:
+        result = await asyncio.to_thread(analyze_chat, chat_history)
+    except Exception as e:
+        await ctx.send(f"❌ Gemini analysis failed: {e}")
+        return
+
+    action  = result.get("action_required", "")
+    summary = result.get("summary_message", "No summary returned.")
+    topics  = result.get("topics_to_explain", [])
+    level   = result.get("student_level", "Unknown")
+    subject = result.get("subject_area", "Unknown")
+
+    # For !helpus, always include the user's topic even if Gemini didn't detect misconceptions
+    if topic and topic not in topics:
+        topics.insert(0, topic)
+
+    prompt_msg = (
+        f"**📊 Analysis Complete**\n\n"
+        f"{summary}\n\n"
+        f"{'👉 Would you like me to generate a study guide for these topics? **(Yes/No)**' if topics else '🔒 Time to lock in!'}"
+    )
+    await ctx.send(prompt_msg)
+
+    if not topics:
+        return
+
+    def check_next(m):
+        return m.channel == ctx.channel and not m.author.bot
+
+    try:
+        reply = await bot.wait_for("message", check=check_next, timeout=60.0)
+    except asyncio.TimeoutError:
+        await ctx.send("⏰ No response received. Skipping study guide generation.")
+        return
+
+    if reply.author != ctx.author or reply.content.strip().lower() not in ("yes", "no"):
+        await ctx.send(f"⚠️ I needed a **Yes/No** from {ctx.author.mention} as the very next message. Please run `!helpus {topic}` again.")
+        return
+
+    if reply.content.strip().lower() == "no":
+        await ctx.send("👍 No problem! Let me know if you need anything else.")
+        return
+
+    await ctx.send("📝 Generating your study guide, hang tight...")
+
+    try:
+        file_path = await asyncio.to_thread(
+            generate_html_resource,
+            chat_history=chat_history,
+            topics=topics,
+            student_level=level,
+            subject_area=subject
+        )
+    except Exception as e:
+        await ctx.send(f"❌ Study guide generation failed: {e}")
+        return
+
+    await ctx.send("☁️ Uploading to S3...")
+
+    try:
+        upload_result = await asyncio.to_thread(upload_html_and_get_object_url, file_path)
+    except Exception as e:
+        await ctx.send(f"❌ Upload failed: {e}")
+        return
+
+    if not upload_result.get("success"):
+        await ctx.send(f"❌ Upload failed: {upload_result.get('error', 'Unknown error')}")
+        return
+
+    detail = upload_result.get("detail", "Study guide uploaded successfully.")
+    await ctx.send(f"✅ {detail}")
 
 
 @bot.command(name="showsettings")
@@ -435,14 +552,12 @@ async def saveus_cmd(ctx):
         return
 
     chat_history = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_collected])
-    await ctx.send(chat_history)
     chat_history = strip_bot_commands(chat_history)
-    await ctx.send(chat_history)
 
     await ctx.send(f"📨 Collected **{len(messages_collected)}** messages. Analysing with Gemini...")
 
     try:
-        result = analyze_chat(chat_history)
+        result = await asyncio.to_thread(analyze_chat, chat_history)
     except Exception as e:
         await ctx.send(f"❌ Gemini analysis failed: {e}")
         return
@@ -463,17 +578,17 @@ async def saveus_cmd(ctx):
     if action != "explain" or not topics:
         return
 
-    def check(m):
-        return (
-            m.channel == ctx.channel
-            and not m.content.strip().startswith("!")
-            and m.content.strip().lower() in ("yes", "no")
-        )
+    def check_next(m):
+        return m.channel == ctx.channel and not m.author.bot
 
     try:
-        reply = await bot.wait_for("message", check=check, timeout=60.0)
-    except TimeoutError:
+        reply = await bot.wait_for("message", check=check_next, timeout=60.0)
+    except asyncio.TimeoutError:
         await ctx.send("⏰ No response received. Skipping study guide generation.")
+        return
+
+    if reply.author != ctx.author or reply.content.strip().lower() not in ("yes", "no"):
+        await ctx.send(f"⚠️ I needed a **Yes/No** from {ctx.author.mention} as the very next message. Please run `!saveus` again.")
         return
 
     if reply.content.strip().lower() == "no":
@@ -483,7 +598,8 @@ async def saveus_cmd(ctx):
     await ctx.send("📝 Generating your study guide, hang tight...")
 
     try:
-        file_path = generate_html_resource(
+        file_path = await asyncio.to_thread(
+            generate_html_resource,
             chat_history=chat_history,
             topics=topics,
             student_level=level,
@@ -497,7 +613,7 @@ async def saveus_cmd(ctx):
     await ctx.send("☁️ Uploading to S3...")
 
     try:
-        upload_result = upload_html_and_get_object_url(file_path)
+        upload_result = await asyncio.to_thread(upload_html_and_get_object_url, file_path)
     except Exception as e:
         await ctx.send(f"❌ Upload failed: {e}")
         return
@@ -508,6 +624,168 @@ async def saveus_cmd(ctx):
 
     detail = upload_result.get("detail", "Study guide uploaded successfully.")
     await ctx.send(f"✅ {detail}")
+
+
+@bot.command(name="quiz")
+async def quiz_cmd(ctx):
+    if ctx.guild is None:
+        await ctx.send("Run this in a server channel.")
+        return
+
+    guild_settings   = get_guild_settings(ctx.guild.id)
+    hours            = guild_settings.get("hours", 24)
+    allowed_channels = guild_settings.get("channels", [])
+    keyword_filters  = guild_settings.get("keyword_filters", [])
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    if allowed_channels:
+        channels_to_scan = [ctx.guild.get_channel(int(cid)) for cid in allowed_channels if ctx.guild.get_channel(int(cid))]
+    else:
+        channels_to_scan = [ch for ch in ctx.guild.text_channels if ch.permissions_for(ctx.guild.me).read_message_history]
+
+    messages_collected: List[tuple] = []
+    for ch in channels_to_scan:
+        try:
+            async for msg in ch.history(limit=2000, after=cutoff):
+                if msg.author.bot:
+                    continue
+                try:
+                    cleaned = clean_text(msg.content)
+                except Exception:
+                    continue
+                if not cleaned.strip():
+                    continue
+                if keyword_filters:
+                    if not any(kw.lower() in cleaned.lower() for kw in keyword_filters):
+                        continue
+                messages_collected.append((ch.name, msg.author.display_name, cleaned))
+        except discord.Forbidden:
+            continue
+
+    if not messages_collected:
+        await ctx.send(f"No messages found in the last **{hours} hours**.")
+        return
+
+    chat_history = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_collected])
+    chat_history = strip_bot_commands(chat_history)
+
+    # Read the latest study guide HTML files from responses/ for extra context
+    study_guide_content = ""
+    responses_dir = "responses"
+    if os.path.isdir(responses_dir):
+        html_files = sorted(
+            [f for f in os.listdir(responses_dir) if f.endswith(".html")],
+            key=lambda f: os.path.getmtime(os.path.join(responses_dir, f)),
+            reverse=True,
+        )
+        for html_file in html_files[:3]:  # last 3 guides
+            try:
+                with open(os.path.join(responses_dir, html_file), "r", encoding="utf-8") as fh:
+                    study_guide_content += fh.read() + "\n\n"
+            except Exception:
+                continue
+
+    await ctx.send("🧠 Generating a quiz from your recent study session...")
+
+    # Analyse first to get level/subject
+    try:
+        analysis = await asyncio.to_thread(analyze_chat, chat_history)
+    except Exception as e:
+        await ctx.send(f"❌ Analysis failed: {e}")
+        return
+
+    student_level = analysis.get("student_level", "Unknown")
+    subject_area  = analysis.get("subject_area", "Unknown")
+
+    try:
+        quiz_data = await asyncio.to_thread(
+            generate_quiz, chat_history, study_guide_content, student_level, subject_area
+        )
+    except Exception as e:
+        await ctx.send(f"❌ Quiz generation failed: {e}")
+        return
+
+    questions = quiz_data.get("questions", [])
+    if not questions:
+        await ctx.send("❌ Couldn't generate any questions. Try again later.")
+        return
+
+    quiz_title = quiz_data.get("quiz_title", "PanikBot Quiz")
+    await ctx.send(f"📝 **{quiz_title}** — {len(questions)} questions incoming!\n*Answer the polls, then the person who started the quiz must type `!answers` as the **very next message** to reveal answers.*")
+
+    # Send each question as a Discord poll
+    for i, q in enumerate(questions, 1):
+        # Extract just the option text (strip A)/B)/etc prefix for poll answers)
+        option_labels = []
+        for opt in q["options"]:
+            # Remove leading "A) ", "B) ", etc.
+            cleaned_opt = re.sub(r"^[A-Da-d]\)\s*", "", opt).strip()
+            # Discord poll answers max 55 chars
+            if len(cleaned_opt) > 55:
+                cleaned_opt = cleaned_opt[:52] + "..."
+            option_labels.append(cleaned_opt)
+
+        poll = discord.Poll(
+            question=discord.PollQuestion(text=f"Q{i}: {q['question'][:295]}"),
+            duration=timedelta(hours=1),
+            multiple=False,
+        )
+        for label in option_labels:
+            poll.add_answer(text=label)
+
+        await ctx.send(poll=poll)
+
+    # Store answers for later reveal
+    bot._quiz_pending = {
+        "channel_id": ctx.channel.id,
+        "requester_id": ctx.author.id,
+        "questions": questions,
+    }
+
+    # Wait for the very next message — must be !answers from the requester
+    def check_answers(m):
+        return m.channel == ctx.channel and not m.author.bot
+
+    try:
+        reply = await bot.wait_for("message", check=check_answers, timeout=300.0)
+    except asyncio.TimeoutError:
+        await ctx.send("⏰ No `!answers` received within 5 minutes. Quiz answers discarded.")
+        bot._quiz_pending = None
+        return
+
+    if reply.author.id != ctx.author.id or reply.content.strip().lower() != "!answers":
+        await ctx.send(
+            f"⚠️ The very next message must be `!answers` from {ctx.author.mention}. "
+            f"Quiz cancelled — run `!quiz` again to retry."
+        )
+        bot._quiz_pending = None
+        return
+
+    # Reveal answers
+    answer_lines = []
+    for i, q in enumerate(questions, 1):
+        correct = q["correct_answer"]
+        # Find the full option text for the correct answer
+        correct_text = ""
+        for opt in q["options"]:
+            if opt.strip().upper().startswith(correct.upper()):
+                correct_text = opt
+                break
+        answer_lines.append(
+            f"**Q{i}:** {correct_text}\n"
+            f"💡 _{q['explanation']}_"
+        )
+
+    answer_embed = discord.Embed(
+        title=f"✅ Answers — {quiz_title}",
+        description="\n\n".join(answer_lines),
+        color=0xC89116,
+    )
+    answer_embed.set_footer(text="Generated by PanikBot · saving grades one ping at a time")
+    await ctx.send(embed=answer_embed)
+    bot._quiz_pending = None
+
 
 def strip_bot_commands(chat_history: str) -> str:
     """Remove any lines that contain bot commands (! appearing anywhere in the message)."""
