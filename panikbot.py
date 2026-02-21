@@ -5,8 +5,8 @@ import io
 from datetime import datetime, timedelta, timezone
 from collections import Counter
 from typing import Dict, Any, List
-from .gemini_ai import analyze_chat, generate_html_resource
-from .notioner import upload_html_and_get_object_url
+from gemini_ai import analyze_chat, generate_html_resource
+from notioner import upload_html_and_get_object_url
 
 import discord
 from discord.ext import commands
@@ -435,6 +435,9 @@ async def saveus_cmd(ctx):
         return
 
     chat_history = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_collected])
+    await ctx.send(chat_history)
+    chat_history = strip_bot_commands(chat_history)
+    await ctx.send(chat_history)
 
     await ctx.send(f"📨 Collected **{len(messages_collected)}** messages. Analysing with Gemini...")
 
@@ -462,8 +465,8 @@ async def saveus_cmd(ctx):
 
     def check(m):
         return (
-            m.author == ctx.author
-            and m.channel == ctx.channel
+            m.channel == ctx.channel
+            and not m.content.strip().startswith("!")
             and m.content.strip().lower() in ("yes", "no")
         )
 
@@ -506,6 +509,11 @@ async def saveus_cmd(ctx):
     detail = upload_result.get("detail", "Study guide uploaded successfully.")
     await ctx.send(f"✅ {detail}")
 
+def strip_bot_commands(chat_history: str) -> str:
+    """Remove any lines that contain bot commands (! appearing anywhere in the message)."""
+    lines = chat_history.split("\n")
+    filtered = [line for line in lines if "!" not in line]
+    return "\n".join(filtered)
 
 # ─────────────────────────────────────────
 # Events
