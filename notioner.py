@@ -113,7 +113,7 @@ def upload_html_and_get_object_url(
                         Params={'Bucket': bucket, 'Key': key},
                         ExpiresIn=presign_expires,
                     )
-                    return {"success": True, "url": url, "detail": "uploaded_no_acl_presigned_url"}
+                    return {"success": True, "url": url, "detail": "Study guide uploaded! (presigned link, expires in 1 hour)"}
             except ClientError as e2:
                 return {"success": False, "error": str(e2), "code": getattr(e2, 'response', {}).get('Error', {}).get('Code')}
         return {"success": False, "error": str(e), "code": code}
@@ -125,7 +125,7 @@ def upload_html_and_get_object_url(
             Params={'Bucket': bucket, 'Key': key},
             ExpiresIn=presign_expires,
         )
-        return {"success": True, "url": url, "detail": r"Oh wow, look at you struggling! 🎉 Don't worry, we've lovingly compiled all your *totally unique* difficulties into a neat little HTML study guide — because clearly you needed the help. You're welcome! 😘 Check it out here before it expires and you're back to square one: {url}"}
+        return {"success": True, "url": url, "detail": f"Study guide uploaded! (presigned link, expires in 1 hour)"}
 
     # Otherwise return constructed object URL (requires public access via ACL or bucket policy)
     try:
@@ -138,7 +138,7 @@ def upload_html_and_get_object_url(
     else:
         url = f"https://{bucket}.s3.{loc}.amazonaws.com/{key}"
 
-    return {"success": True, "url": url, "detail": "object_url_may_require_public_access"}
+    return {"success": True, "url": url, "detail": "Study guide uploaded!"}
 
 
 if __name__ == '__main__':

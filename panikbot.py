@@ -402,8 +402,13 @@ async def helpus_cmd(ctx, *, topic: str = None):
         await ctx.send(f"No messages found about **{topic}** in the last **{hours} hours**.")
         return
 
-    chat_history = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_collected])
-    chat_history = strip_bot_commands(chat_history)
+    chat_history_raw = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_collected])
+
+    # Debug: always show the raw messages the bot found
+    debug_msg = f"🔎 **Messages found ({len(messages_collected)}):**\n{chat_history_raw}"
+    await ctx.send(debug_msg[:2000] + ("\n...[truncated]" if len(debug_msg) > 2000 else ""))
+
+    chat_history = strip_bot_commands(chat_history_raw)
 
     await ctx.send(f"📨 Found **{len(messages_collected)}** messages about **{topic}**. Analysing with Gemini...")
 
@@ -477,7 +482,12 @@ async def helpus_cmd(ctx, *, topic: str = None):
         return
 
     detail = upload_result.get("detail", "Study guide uploaded successfully.")
+    url = upload_result.get("url", "")
     await ctx.send(f"✅ {detail}")
+    if url:
+        await ctx.send(f"📎 **Link to study guide:** {url}")
+    else:
+        await ctx.send("⚠️ Upload succeeded but no URL was returned.")
 
 
 @bot.command(name="showsettings")
@@ -727,7 +737,7 @@ async def quiz_cmd(ctx):
             option_labels.append(cleaned_opt)
 
         poll = discord.Poll(
-            question=discord.PollQuestion(text=f"Q{i}: {q['question'][:295]}"),
+            question=f"Q{i}: {q['question'][:295]}",
             duration=timedelta(hours=1),
             multiple=False,
         )
