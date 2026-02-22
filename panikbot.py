@@ -1013,53 +1013,121 @@ async def saveus_cmd(ctx):
 # !analyse — custom date-range analysis
 # ─────────────────────────────────────────
 
-class DateTimeModal(discord.ui.Modal, title="Enter Date & Time Range"):
-    start_date = discord.ui.TextInput(
-        label="Start  (YYYY-MM-DD HH:MM)",
-        placeholder="e.g. 2026-02-20 09:00",
-        required=True,
-        max_length=16,
-    )
-    end_date = discord.ui.TextInput(
-        label="End  (YYYY-MM-DD HH:MM)",
-        placeholder="e.g. 2026-02-21 18:00",
-        required=True,
-        max_length=16,
-    )
+def _build_date_options() -> list[discord.SelectOption]:
+    """Build dropdown options for the last 14 days (calendar-style)."""
+    today = datetime.now(timezone.utc)
+    options = []
+    for days_ago in range(14):
+        d = today - timedelta(days=days_ago)
+        label = d.strftime("%a %d %b %Y")  # e.g. "Sat 22 Feb 2026"
+        value = d.strftime("%Y-%m-%d")
+        desc = "Today" if days_ago == 0 else ("Yesterday" if days_ago == 1 else f"{days_ago} days ago")
+        options.append(discord.SelectOption(label=label, value=value, description=desc))
+    return options
 
+
+def _build_hour_options() -> list[discord.SelectOption]:
+    """Build dropdown options for hours of the day."""
+    options = []
+    for h in range(24):
+        label = f"{h:02d}:00"
+        options.append(discord.SelectOption(label=label, value=str(h)))
+    return options
+
+
+class StartDateSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="📅 Start date...",
+            options=_build_date_options(),
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.start_date = self.values[0]
+        await interaction.response.defer()
+
+
+class StartHourSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="🕐 Start hour...",
+            options=_build_hour_options(),
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.start_hour = self.values[0]
+        await interaction.response.defer()
+
+
+class EndDateSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="📅 End date...",
+            options=_build_date_options(),
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.end_date = self.values[0]
+        await interaction.response.defer()
+
+
+class EndHourSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="🕐 End hour...",
+            options=_build_hour_options(),
+            row=3,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.end_hour = self.values[0]
+        await interaction.response.defer()
+
+
+class AnalyseDateView(discord.ui.View):
     def __init__(self, ctx):
-        super().__init__()
+        super().__init__(timeout=120)
         self.ctx = ctx
+        self.start_date = None
+        self.start_hour = None
+        self.end_date = None
+        self.end_hour = None
+        self.add_item(StartDateSelect())
+        self.add_item(StartHourSelect())
+        self.add_item(EndDateSelect())
+        self.add_item(EndHourSelect())
 
-    async def on_submit(self, interaction: discord.Interaction):
-        # Parse dates
+    @discord.ui.button(label="🔍 Analyse", style=discord.ButtonStyle.success, row=4)
+    async def analyse_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Validate all fields are selected
+        if not all([self.start_date, self.start_hour, self.end_date, self.end_hour]):
+            await interaction.response.send_message(
+                "❌ Please select **all four fields** (start date, start hour, end date, end hour) before clicking Analyse.",
+                ephemeral=True,
+            )
+            return
+
         fmt = "%Y-%m-%d %H:%M"
-        try:
-            start_dt = datetime.strptime(self.start_date.value.strip(), fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            await interaction.response.send_message(
-                f"❌ Invalid start date `{self.start_date.value}`. Use format `YYYY-MM-DD HH:MM`.",
-                ephemeral=True,
-            )
-            return
-        try:
-            end_dt = datetime.strptime(self.end_date.value.strip(), fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            await interaction.response.send_message(
-                f"❌ Invalid end date `{self.end_date.value}`. Use format `YYYY-MM-DD HH:MM`.",
-                ephemeral=True,
-            )
-            return
+        start_dt = datetime.strptime(f"{self.start_date} {int(self.start_hour):02d}:00", fmt).replace(tzinfo=timezone.utc)
+        end_dt = datetime.strptime(f"{self.end_date} {int(self.end_hour):02d}:00", fmt).replace(tzinfo=timezone.utc)
 
         if end_dt <= start_dt:
-            await interaction.response.send_message("❌ End date must be after start date.", ephemeral=True)
+            await interaction.response.send_message("❌ End date/time must be after start date/time.", ephemeral=True)
             return
 
-        await interaction.response.send_message(
+        # Disable the view
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        ctx = self.ctx
+        await ctx.send(
             f"📅 Scanning messages from **{start_dt.strftime(fmt)}** to **{end_dt.strftime(fmt)}** UTC..."
         )
 
-        ctx = self.ctx
         guild_settings   = get_guild_settings(ctx.guild.id)
         allowed_channels = guild_settings.get("channels", [])
         keyword_filters  = guild_settings.get("keyword_filters", [])
@@ -1175,52 +1243,6 @@ class DateTimeModal(discord.ui.Modal, title="Enter Date & Time Range"):
             await ctx.send("⚠️ Upload succeeded but no URL was returned.")
 
 
-class DateSelectView(discord.ui.View):
-    def __init__(self, ctx):
-        super().__init__(timeout=120)
-        self.ctx = ctx
-        self.add_item(DateSelectDropdown(ctx, 'start'))
-        self.add_item(DateSelectDropdown(ctx, 'end'))
-
-
-class DateSelectDropdown(discord.ui.Select):
-    def __init__(self, ctx, which):
-        self.ctx = ctx
-        self.which = which
-        now = datetime.now()
-        years = [str(now.year - 1), str(now.year), str(now.year + 1)]
-        months = [str(m).zfill(2) for m in range(1, 13)]
-        days = [str(d).zfill(2) for d in range(1, 32)]
-        hours = [str(h).zfill(2) for h in range(0, 24)]
-        minutes = [str(m).zfill(2) for m in range(0, 60, 5)]
-        options = []
-        for y in years:
-            for m in months:
-                for d in days:
-                    for h in hours:
-                        for min in minutes:
-                            label = f"{y}-{m}-{d} {h}:{min}"
-                            options.append(discord.SelectOption(label=label, value=label))
-        super().__init__(
-            placeholder=f"Select {which} date/time...",
-            min_values=1, max_values=1,
-            options=options[:100],  # Discord limit
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message(f"Selected {self.which} date/time: {self.values[0]}", ephemeral=True)
-
-
-class AnalyseDateButton(discord.ui.View):
-    def __init__(self, ctx):
-        super().__init__(timeout=120)
-        self.ctx = ctx
-
-    @discord.ui.button(label="📅 Pick Date Range", style=discord.ButtonStyle.primary)
-    async def pick_dates(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DateTimeModal(self.ctx))
-
-
 @bot.command(name="analyse")
 async def analyse_cmd(ctx):
     if ctx.guild is None:
@@ -1229,12 +1251,14 @@ async def analyse_cmd(ctx):
 
     embed = discord.Embed(
         title="📅 Analyse — Custom Date Range",
-        description="Click the button below to enter a start and end date/time.\nI'll scrape all messages between those two timestamps and analyse them.",
+        description=(
+            "Pick a **start** and **end** date/time from the dropdowns below, "
+            "then hit **🔍 Analyse** to scan all messages in that range."
+        ),
         color=0x5865F2,
     )
-    embed.add_field(name="Format", value="`YYYY-MM-DD HH:MM` (UTC)", inline=False)
-    embed.set_footer(text="PanikBot · PII is always redacted")
-    view = AnalyseDateButton(ctx)
+    embed.set_footer(text="PanikBot · All times are UTC · PII is always redacted")
+    view = AnalyseDateView(ctx)
     await ctx.send(embed=embed, view=view)
 
 
