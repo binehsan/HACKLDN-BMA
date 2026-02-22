@@ -794,20 +794,47 @@ async def ragsync_cmd(ctx):
 
     await ctx.send(
         f"🔄 **Syncing RAG knowledge base...**\n"
-        f"Scanning all threads for messages with ≥ {threshold} 👍 reactions. This may take a moment..."
+        f"Scanning all threads for messages with ≥ {threshold} 👍 reactions "
+        f"and `!learnthis` uploads. This may take a moment..."
     )
+
+    result = await _run_ragsync(ctx.guild)
+
+    embed = discord.Embed(
+        title="✅ RAG Sync Complete",
+        color=0xC89116,
+    )
+    embed.add_field(name="🔍 Threads Scanned", value=str(result["scanned_threads"]), inline=True)
+    embed.add_field(name="💬 Messages Checked", value=str(result["scanned_messages"]), inline=True)
+    embed.add_field(name="➕ New Entries Added", value=str(result["added"]), inline=True)
+    embed.add_field(name="🔄 Entries Updated", value=str(result["updated"]), inline=True)
+    embed.add_field(name="📄 Uploads Processed", value=str(result["uploads_processed"]), inline=True)
+    embed.add_field(name="📚 Total KB Entries", value=str(result["total_entries"]), inline=True)
+    embed.set_footer(text=f"Threshold: {threshold} 👍 | Change with !changesettings threshold <n>")
+    await ctx.send(embed=embed)
+
+
+async def _run_ragsync(guild: discord.Guild) -> dict:
+    """Core ragsync logic — scans threads for upvoted messages and uploads channel for !learnthis files.
+
+    Returns a dict with sync stats.
+    """
+    guild_settings = get_guild_settings(guild.id)
+    threshold = guild_settings.get("rag_reaction_threshold", 1)
 
     added = 0
     updated = 0
     scanned_threads = 0
     scanned_messages = 0
+    uploads_processed = 0
 
     # Gather all text channels the bot can read
     channels = [
-        ch for ch in ctx.guild.text_channels
-        if ch.permissions_for(ctx.guild.me).read_message_history
+        ch for ch in guild.text_channels
+        if ch.permissions_for(guild.me).read_message_history
     ]
 
+    # ── Phase 1: Scan threads for upvoted messages ──
     for channel in channels:
         # Get active threads
         try:
@@ -844,12 +871,11 @@ async def ragsync_cmd(ctx):
                             break
 
                     if thumbs_count >= threshold:
-                        # Check if it's a new or existing entry
-                        stats_before = rag_stats(ctx.guild.id)
+                        stats_before = rag_stats(guild.id)
                         try:
                             await asyncio.to_thread(
                                 rag_add,
-                                guild_id=ctx.guild.id,
+                                guild_id=guild.id,
                                 message_id=message.id,
                                 author_name=message.author.display_name,
                                 content=message.content,
@@ -857,7 +883,7 @@ async def ragsync_cmd(ctx):
                                 thread_name=thread.name,
                                 reaction_count=thumbs_count,
                             )
-                            stats_after = rag_stats(ctx.guild.id)
+                            stats_after = rag_stats(guild.id)
                             if stats_after["total_entries"] > stats_before["total_entries"]:
                                 added += 1
                             else:
@@ -867,18 +893,86 @@ async def ragsync_cmd(ctx):
             except (discord.Forbidden, discord.HTTPException):
                 continue
 
-    final_stats = rag_stats(ctx.guild.id)
-    embed = discord.Embed(
-        title="✅ RAG Sync Complete",
-        color=0xC89116,
-    )
-    embed.add_field(name="🔍 Threads Scanned", value=str(scanned_threads), inline=True)
-    embed.add_field(name="💬 Messages Checked", value=str(scanned_messages), inline=True)
-    embed.add_field(name="➕ New Entries Added", value=str(added), inline=True)
-    embed.add_field(name="🔄 Entries Updated", value=str(updated), inline=True)
-    embed.add_field(name="📚 Total KB Entries", value=str(final_stats["total_entries"]), inline=True)
-    embed.set_footer(text=f"Threshold: {threshold} 👍 | Change with !changesettings threshold <n>")
-    await ctx.send(embed=embed)
+    # ── Phase 2: Scan for !learnthis uploads across all readable channels ──
+    for channel in channels:
+        try:
+            async for message in channel.history(limit=2000):
+                if message.author.bot:
+                    continue
+                # Check if the message starts with !learnthis and has attachments
+                if not message.content.strip().lower().startswith("!learnthis"):
+                    continue
+
+                pdf_attachments = [a for a in message.attachments if a.filename.lower().endswith(".pdf")]
+                txt_attachments = [a for a in message.attachments if a.filename.lower().endswith(".txt")]
+
+                if not pdf_attachments and not txt_attachments:
+                    continue
+
+                for attachment in pdf_attachments:
+                    try:
+                        file_bytes = await attachment.read()
+                        import PyPDF2
+                        reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+                        pages_text = []
+                        for page in reader.pages:
+                            page_text = page.extract_text()
+                            if page_text:
+                                pages_text.append(page_text.strip())
+                        full_text = "\n\n".join(pages_text)
+
+                        if not full_text.strip():
+                            continue
+
+                        full_text = clean_text(full_text)
+
+                        chunks_added = await asyncio.to_thread(
+                            rag_add_doc,
+                            guild_id=guild.id,
+                            author_name=message.author.display_name,
+                            content=full_text,
+                            source_name=attachment.filename,
+                        )
+                        uploads_processed += 1
+                        added += chunks_added
+                        print(f"  📄 Synced upload: {attachment.filename} ({chunks_added} chunks)")
+                    except Exception as e:
+                        print(f"  ❌ Failed to sync PDF {attachment.filename}: {e}")
+
+                for attachment in txt_attachments:
+                    try:
+                        file_bytes = await attachment.read()
+                        full_text = file_bytes.decode("utf-8", errors="replace")
+
+                        if not full_text.strip():
+                            continue
+
+                        full_text = clean_text(full_text)
+
+                        chunks_added = await asyncio.to_thread(
+                            rag_add_doc,
+                            guild_id=guild.id,
+                            author_name=message.author.display_name,
+                            content=full_text,
+                            source_name=attachment.filename,
+                        )
+                        uploads_processed += 1
+                        added += chunks_added
+                        print(f"  📝 Synced upload: {attachment.filename} ({chunks_added} chunks)")
+                    except Exception as e:
+                        print(f"  ❌ Failed to sync TXT {attachment.filename}: {e}")
+        except (discord.Forbidden, discord.HTTPException):
+            continue
+
+    final_stats = rag_stats(guild.id)
+    return {
+        "scanned_threads": scanned_threads,
+        "scanned_messages": scanned_messages,
+        "added": added,
+        "updated": updated,
+        "uploads_processed": uploads_processed,
+        "total_entries": final_stats["total_entries"],
+    }
 
 
 @bot.command(name="saveus")
@@ -1627,7 +1721,10 @@ async def battle_cmd(ctx, *, topic: str = None):
         await ctx.send("Please provide a topic.\nExample: `!battle Biology Cells`")
         return
 
-    await ctx.send(f"⚔️ **Battle Mode!** Generating 5 questions on **{topic}**...")
+    await ctx.send(
+        f"⚔️ **Battle Mode!** Generating 5 questions on **{topic}**...\n"
+        f"@here Get ready to join the battle!"
+    , allowed_mentions=discord.AllowedMentions(everyone=True))
 
     try:
         battle_data = await asyncio.to_thread(generate_battle_questions, topic)
@@ -1814,6 +1911,20 @@ async def generate_with_progress(channel, generate_coro):
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print("Ready! Type !help in Discord to see all commands.")
+
+    # Auto-sync RAG knowledge base for all guilds on startup
+    for guild in bot.guilds:
+        print(f"🔄 Auto-syncing RAG for guild: {guild.name} ({guild.id})...")
+        try:
+            result = await _run_ragsync(guild)
+            print(
+                f"  ✅ RAG sync done for {guild.name}: "
+                f"{result['added']} added, {result['updated']} updated, "
+                f"{result['uploads_processed']} uploads, "
+                f"{result['total_entries']} total entries"
+            )
+        except Exception as e:
+            print(f"  ❌ RAG auto-sync failed for {guild.name}: {e}")
 
 
 @bot.event
