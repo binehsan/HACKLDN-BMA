@@ -542,7 +542,7 @@ async def helpus_cmd(ctx, *, topic: str = None):
     )
 
     # Build chat history with clear context separation
-    chat_history = format_grouped_messages(grouped)
+    chat_history = topic
 
     # Query community RAG knowledge base
     community_context = ""
