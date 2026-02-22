@@ -1,0 +1,3 @@
+this is panikbot - our own self and group study bot that enhances education through human connection.
+Instead of students learning on several different platforms, we go to where they have always been - Discord.
+Panikbot listens to student discussions and provides helps based on sutdent discussions rather than requiring students to know that they dont know something and having to describe their situation. 
