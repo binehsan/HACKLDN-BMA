@@ -34,7 +34,7 @@ def upload_html_and_get_object_url(
     key: Optional[str] = None,
     make_public: bool = True,
     presign_if_private: bool = True,
-    presign_expires: int = 3600,
+    presign_expires: int = 604800,
     aws_access_key_id: Optional[str] = None,
     aws_secret_access_key: Optional[str] = None,
     aws_region: Optional[str] = None,
@@ -114,7 +114,7 @@ def upload_html_and_get_object_url(
                         Params={'Bucket': bucket, 'Key': key},
                         ExpiresIn=presign_expires,
                     )
-                    return {"success": True, "url": url, "detail": "Study guide uploaded! (presigned link, expires in 1 hour)"}
+                    return {"success": True, "url": url, "detail": "Study guide uploaded! (presigned link, expires in 7 days)"}
             except ClientError as e2:
                 return {"success": False, "error": str(e2), "code": getattr(e2, 'response', {}).get('Error', {}).get('Code')}
         return {"success": False, "error": str(e), "code": code}
@@ -126,7 +126,7 @@ def upload_html_and_get_object_url(
             Params={'Bucket': bucket, 'Key': key},
             ExpiresIn=presign_expires,
         )
-        return {"success": True, "url": url, "detail": f"Study guide uploaded! (presigned link, expires in 1 hour)"}
+        return {"success": True, "url": url, "detail": f"Study guide uploaded! (presigned link, expires in 7 days)"}
 
     # Otherwise return constructed object URL (requires public access via ACL or bucket policy)
     try:
