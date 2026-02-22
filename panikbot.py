@@ -1022,8 +1022,8 @@ async def saveus_cmd(ctx):
     level   = result.get("student_level", "Unknown")
     subject = result.get("subject_area", "Unknown")
 
-    # Store latest session so !quiz can use it
-    bot._last_session[ctx.guild.id] = {
+    # Store latest session so !quiz can use it — keyed per (guild, channel)
+    bot._last_session[(ctx.guild.id, ctx.channel.id)] = {
         "chat_history": chat_history,
         "student_level": level,
         "subject_area": subject,
@@ -1261,8 +1261,8 @@ class AnalyseDateView(discord.ui.View):
         level   = result.get("student_level", "Unknown")
         subject = result.get("subject_area", "Unknown")
 
-        # Store latest session so !quiz can use it
-        bot._last_session[ctx.guild.id] = {
+        # Store latest session so !quiz can use it — keyed per (guild, channel)
+        bot._last_session[(ctx.guild.id, ctx.channel.id)] = {
             "chat_history": chat_history,
             "student_level": level,
             "subject_area": subject,
@@ -1362,8 +1362,8 @@ async def quiz_cmd(ctx):
         await ctx.send("Run this in a server channel.")
         return
 
-    # Use the latest session if available (from !saveus or !analyse)
-    session = bot._last_session.get(ctx.guild.id)
+    # Use the latest session if available (from !saveus or !analyse in THIS channel)
+    session = bot._last_session.get((ctx.guild.id, ctx.channel.id))
 
     if session:
         chat_history  = session["chat_history"]
@@ -1371,18 +1371,15 @@ async def quiz_cmd(ctx):
         subject_area  = session["subject_area"]
         await ctx.send(f"🧠 Generating a quiz from your latest study session ({subject_area})...")
     else:
-        # Fallback: scrape recent messages (with thread awareness)
+        # Fallback: scrape recent messages from THIS CHANNEL ONLY (+ its threads)
         guild_settings   = get_guild_settings(ctx.guild.id)
         hours            = guild_settings.get("hours", 24)
-        allowed_channels = guild_settings.get("channels", [])
         keyword_filters  = guild_settings.get("keyword_filters", [])
 
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-        if allowed_channels:
-            channels_to_scan = [ctx.guild.get_channel(int(cid)) for cid in allowed_channels if ctx.guild.get_channel(int(cid))]
-        else:
-            channels_to_scan = [ch for ch in ctx.guild.text_channels if ch.permissions_for(ctx.guild.me).read_message_history]
+        # Only scan the channel where !quiz was invoked
+        channels_to_scan = [ctx.channel]
 
         grouped = await collect_messages_grouped(
             channels_to_scan,
@@ -1398,7 +1395,7 @@ async def quiz_cmd(ctx):
             return
 
         chat_history = format_grouped_messages(grouped)
-
+        
         await ctx.send("🧠 Generating a quiz from recent messages...")
 
         # Analyse to get level/subject
@@ -1628,7 +1625,6 @@ async def quiz_cmd(ctx):
                 f"📉 **Topics that need more work:**\n{weak_list}\n\n"
                 f"👉 Would you like me to explain these topics in depth? **(Yes/No)**"
             )
-
             # Wait for yes/no from the quiz requester
             def check_yes_no(m):
                 return (
@@ -1699,13 +1695,6 @@ async def quiz_cmd(ctx):
         await ctx.send("ℹ️ No poll votes were detected — couldn't analyse results.")
 
     bot._quiz_pending = None
-
-
-def strip_bot_commands(chat_history: str) -> str:
-    """Remove any lines that contain bot commands (! appearing anywhere in the message)."""
-    lines = chat_history.split("\n")
-    filtered = [line for line in lines if "!" not in line]
-    return "\n".join(filtered)
 
 
 # ─────────────────────────────────────────
