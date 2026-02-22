@@ -6,9 +6,9 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from collections import Counter
 from typing import Dict, Any, List
-from gemini_ai import analyze_chat, generate_html_resource, generate_quiz
+from gemini_ai import analyze_chat, generate_html_resource, generate_quiz, generate_battle_questions
 from notioner import upload_html_and_get_object_url
-from rag_store import add_message as rag_add, query_knowledge as rag_query, get_stats as rag_stats
+from rag_store import add_message as rag_add, query_knowledge as rag_query, get_stats as rag_stats, add_document_chunks as rag_add_doc
 
 import discord
 from discord.ext import commands
@@ -91,8 +91,136 @@ def clean_text(text: str) -> str:
 
 
 # ─────────────────────────────────────────
-# UI Components
+# Message collection helpers
 # ─────────────────────────────────────────
+
+async def collect_messages_grouped(
+    channels: list,
+    cutoff_after=None,
+    cutoff_before=None,
+    keyword_filters: list = None,
+    limit_per_source: int = 2000,
+    include_threads: bool = True,
+) -> dict:
+    """Collect messages from channels AND their threads, grouped by context.
+
+    Returns a dict like:
+    {
+        "#general": [(author, text), ...],
+        "#general > Biology Cells": [(author, text), ...],
+        "#general > Chemistry": [(author, text), ...],
+        "#demo": [(author, text), ...],
+    }
+    This prevents Gemini from confusing messages across different threads/channels.
+    """
+    grouped: dict[str, list[tuple[str, str]]] = {}
+
+    history_kwargs = {"limit": limit_per_source}
+    if cutoff_after:
+        history_kwargs["after"] = cutoff_after
+    if cutoff_before:
+        history_kwargs["before"] = cutoff_before
+
+    for ch in channels:
+        context_key = f"#{ch.name}"
+
+        # --- Collect from the channel itself ---
+        try:
+            async for msg in ch.history(**history_kwargs):
+                if msg.author.bot:
+                    continue
+                if msg.content.strip().startswith("!"):
+                    continue
+                try:
+                    cleaned = clean_text(msg.content)
+                except Exception:
+                    continue
+                if not cleaned.strip():
+                    continue
+                if keyword_filters:
+                    if not any(kw.lower() in cleaned.lower() for kw in keyword_filters):
+                        continue
+                grouped.setdefault(context_key, []).append((msg.author.display_name, cleaned))
+        except discord.Forbidden:
+            continue
+
+        # --- Collect from threads inside this channel ---
+        if not include_threads:
+            continue
+
+        all_threads = []
+        try:
+            all_threads.extend(ch.threads)  # active threads
+        except Exception:
+            pass
+        try:
+            async for thread in ch.archived_threads(limit=50):
+                all_threads.append(thread)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        for thread in all_threads:
+            thread_key = f"#{ch.name} > {thread.name}"
+            try:
+                async for msg in thread.history(**history_kwargs):
+                    if msg.author.bot:
+                        continue
+                    if msg.content.strip().startswith("!"):
+                        continue
+                    try:
+                        cleaned = clean_text(msg.content)
+                    except Exception:
+                        continue
+                    if not cleaned.strip():
+                        continue
+                    if keyword_filters:
+                        if not any(kw.lower() in cleaned.lower() for kw in keyword_filters):
+                            continue
+                    grouped.setdefault(thread_key, []).append((msg.author.display_name, cleaned))
+            except (discord.Forbidden, discord.HTTPException):
+                continue
+
+    return grouped
+
+
+def format_grouped_messages(grouped: dict) -> str:
+    """Format grouped messages into a structured string that clearly separates contexts.
+
+    Output looks like:
+    === Channel: #general ===
+    Alice: hi everyone
+    Bob: hey
+
+    === Thread: #general > Biology Cells ===
+    Alice: what is the powerhouse of the cell?
+    Bob: mitochondria
+    ...
+
+    This prevents the AI from cross-contaminating conversations.
+    """
+    sections = []
+    for context_key, messages in grouped.items():
+        if not messages:
+            continue
+        label = "Thread" if " > " in context_key else "Channel"
+        header = f"=== {label}: {context_key} ==="
+        lines = [f"{author}: {text}" for author, text in messages]
+        sections.append(header + "\n" + "\n".join(lines))
+    return "\n\n".join(sections)
+
+
+def count_grouped_messages(grouped: dict) -> int:
+    """Total message count across all groups."""
+    return sum(len(msgs) for msgs in grouped.values())
+
+
+def flatten_grouped_messages(grouped: dict) -> List[tuple]:
+    """Flatten back to (context_key, author, text) tuples for legacy code paths."""
+    flat = []
+    for context_key, messages in grouped.items():
+        for author, text in messages:
+            flat.append((context_key, author, text))
+    return flat
 
 class HoursSelect(discord.ui.Select):
     def __init__(self, guild_id: int):
@@ -259,7 +387,7 @@ async def do_analysis(channel, guild, requester, topic: str = None):
     keyword_filters  = guild_settings.get("keyword_filters", [])
     allowed_channels = guild_settings.get("channels", [])
 
-    search_terms = [topic] if topic else keyword_filters
+    search_terms = [topic] if topic else (keyword_filters if keyword_filters else None)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     if allowed_channels:
@@ -267,27 +395,16 @@ async def do_analysis(channel, guild, requester, topic: str = None):
     else:
         channels_to_scan = [ch for ch in guild.text_channels if ch.permissions_for(guild.me).read_message_history]
 
-    messages_cleaned: List[tuple] = []  # (channel_name, author_name, cleaned_text)
-    total_count = 0
+    grouped = await collect_messages_grouped(
+        channels_to_scan,
+        cutoff_after=cutoff,
+        keyword_filters=search_terms,
+        limit_per_source=2000,
+        include_threads=True,
+    )
 
-    for ch in channels_to_scan:
-        try:
-            async for msg in ch.history(limit=2000, after=cutoff):
-                if msg.author.bot:
-                    continue
-                try:
-                    cleaned = clean_text(msg.content)
-                except Exception:
-                    continue
-                if not cleaned.strip():
-                    continue
-                if search_terms:
-                    if not any(term.lower() in cleaned.lower() for term in search_terms):
-                        continue
-                messages_cleaned.append((ch.name, msg.author.display_name, cleaned))
-                total_count += 1
-        except discord.Forbidden:
-            continue
+    total_count = count_grouped_messages(grouped)
+    messages_flat = flatten_grouped_messages(grouped)
 
     title = f"📊 Topic Search: \"{topic}\"" if topic else f"📊 Analysis — Last {hours} Hour(s)"
 
@@ -298,24 +415,25 @@ async def do_analysis(channel, guild, requester, topic: str = None):
     embed = discord.Embed(title=title, color=0x57F287, timestamp=datetime.now(timezone.utc))
     embed.set_footer(text=f"Requested by {requester.display_name} · PII redacted")
     embed.add_field(name="Messages found", value=str(total_count), inline=True)
+    embed.add_field(name="Contexts", value=str(len(grouped)), inline=True)
     embed.add_field(name="Format",         value=output_format.capitalize(), inline=True)
     if search_terms:
         embed.add_field(name="🔍 Searching for", value=", ".join(search_terms), inline=False)
 
     if output_format == "summary" and not topic:
-        authors = [author for _, author, _ in messages_cleaned]
+        authors = [author for _, author, _ in messages_flat]
         top     = Counter(authors).most_common(5)
         top_str = "\n".join([f"**{a}**: {c} msg(s)" for a, c in top])
         embed.add_field(name="🗣️ Most Active Users", value=top_str or "N/A", inline=False)
 
-    sample_lines = [f"[#{ch}] {author}: {text}" for ch, author, text in messages_cleaned[:5]]
+    sample_lines = [f"[{ctx_key}] {author}: {text}" for ctx_key, author, text in messages_flat[:5]]
     sample = "\n".join(sample_lines)
     if len(sample) > 1000:
         sample = sample[:1000] + "\n...[truncated]"
     embed.add_field(name="📝 Sample Messages", value=f"```{sample}```", inline=False)
 
     if output_format == "raw" or topic:
-        raw_text   = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_cleaned])
+        raw_text   = format_grouped_messages(grouped)
         file_bytes = raw_text.encode("utf-8")
         file = discord.File(fp=io.BytesIO(file_bytes), filename="results.txt")
         await channel.send(embed=embed, file=file)
@@ -370,7 +488,12 @@ async def helpnow_cmd(ctx):
         inline=False
     )
     embed.add_field(
-        name="🔄 `!ragsync`",
+        name="� `!learnthis`",
+        value="Upload a **PDF** or **TXT** file of your notes directly to the knowledge base. Attach the file to the same message.\nExample: Type `!learnthis` and drag your notes PDF into the message.",
+        inline=False
+    )
+    embed.add_field(
+        name="�🔄 `!ragsync`",
         value="Scan all threads for 👍-upvoted messages and backfill them into the knowledge base. Run this when starting on a new device or to catch up on historical reactions.",
         inline=False
     )
@@ -403,7 +526,7 @@ async def helpus_cmd(ctx, *, topic: str = None):
     hours          = guild_settings.get("hours", 24)
     allowed_channels = guild_settings.get("channels", [])
 
-    # Still collect recent chat for context, but don't filter by topic
+    # Collect recent chat for context (including threads), don't filter by topic
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     if allowed_channels:
@@ -411,54 +534,41 @@ async def helpus_cmd(ctx, *, topic: str = None):
     else:
         channels_to_scan = [ch for ch in ctx.guild.text_channels if ch.permissions_for(ctx.guild.me).read_message_history]
 
-    messages_collected: List[tuple] = []
+    grouped = await collect_messages_grouped(
+        channels_to_scan,
+        cutoff_after=cutoff,
+        limit_per_source=500,
+        include_threads=True,
+    )
 
-    for ch in channels_to_scan:
-        try:
-            async for msg in ch.history(limit=500, after=cutoff):
-                if msg.author.bot:
-                    continue
-                if msg.content.strip().startswith("!"):
-                    continue
-                try:
-                    cleaned = clean_text(msg.content)
-                except Exception:
-                    continue
-                if not cleaned.strip():
-                    continue
-                messages_collected.append((ch.name, msg.author.display_name, cleaned))
-        except discord.Forbidden:
-            continue
-
-    # Build chat history for context (or use empty string if none)
-    chat_history = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_collected])
-
-    await ctx.send(f"📝 Generating your study guide for **{topic}**, hang tight...")
+    # Build chat history with clear context separation
+    chat_history = format_grouped_messages(grouped)
 
     # Query community RAG knowledge base
     community_context = ""
     if ctx.guild:
         try:
             community_context = await asyncio.to_thread(rag_query, ctx.guild.id, [topic])
-            if community_context:
-                await ctx.send("🧠 Found community knowledge — weaving it into the guide!")
         except Exception as e:
             print(f"  ⚠️ RAG query failed: {e}")
 
     try:
-        file_path = await asyncio.to_thread(
-            generate_html_resource,
-            chat_history=chat_history,
-            topics=[topic],
-            student_level="Unknown",
-            subject_area=topic,
-            rag_context=community_context,
+        file_path, status_msg = await generate_with_progress(
+            ctx.channel,
+            asyncio.to_thread(
+                generate_html_resource,
+                chat_history=chat_history,
+                topics=[topic],
+                student_level="Unknown",
+                subject_area=topic,
+                rag_context=community_context,
+            ),
         )
     except Exception as e:
         await ctx.send(f"❌ Study guide generation failed: {e}")
         return
 
-    await ctx.send("☁️ Uploading to S3...")
+    await status_msg.edit(content="📊 **Generating Study Guide**\n`[██████████]`\n_☁️ Uploading to S3..._")
 
     try:
         upload_result = await asyncio.to_thread(upload_html_and_get_object_url, file_path)
@@ -545,13 +655,131 @@ async def rag_cmd(ctx):
             "2. Others answer in that thread\n"
             "3. React with 👍 to good answers\n"
             "4. Bot auto-saves answers that hit the threshold\n"
-            "5. Future `!saveus`/`!analyse` guides reference these explanations\n"
-            "6. Contributors get **✨ Community Spotlight** shoutouts!"
+            "5. **Or** upload notes directly with `!learnthis` (PDF/TXT)\n"
+            "6. Future `!saveus`/`!helpus`/`!quiz` guides reference these explanations\n"
+            "7. Contributors get **✨ Community Spotlight** shoutouts!"
         ),
         inline=False,
     )
     embed.set_footer(text="Change threshold: !changesettings threshold <n>")
     await ctx.send(embed=embed)
+
+
+@bot.command(name="learnthis")
+async def learnthis_cmd(ctx):
+    """Upload a PDF (or TXT) to the RAG knowledge base so future study guides can reference it."""
+    if ctx.guild is None:
+        await ctx.send("Run this in a server channel.")
+        return
+
+    # Check for PDF / TXT attachments
+    pdf_attachments = [a for a in ctx.message.attachments if a.filename.lower().endswith(".pdf")]
+    txt_attachments = [a for a in ctx.message.attachments if a.filename.lower().endswith(".txt")]
+
+    if not pdf_attachments and not txt_attachments:
+        await ctx.send(
+            "📎 **How to use `!learnthis`:**\n"
+            "Attach a **PDF** or **TXT** file to your message along with the command.\n"
+            "Example: Type `!learnthis` and drag-and-drop your notes PDF into the same message.\n\n"
+            "The content will be chunked, embedded, and added to the 🧠 **Community Knowledge Base** "
+            "so future study guides and quizzes can reference your notes!"
+        )
+        return
+
+    total_chunks = 0
+
+    # Process PDF attachments
+    for attachment in pdf_attachments:
+        await ctx.send(f"📄 Processing **{attachment.filename}**...")
+
+        try:
+            file_bytes = await attachment.read()
+        except Exception as e:
+            await ctx.send(f"❌ Failed to download `{attachment.filename}`: {e}")
+            continue
+
+        # Extract text from PDF
+        try:
+            import PyPDF2
+
+            reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+            pages_text = []
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    pages_text.append(page_text.strip())
+            full_text = "\n\n".join(pages_text)
+        except Exception as e:
+            await ctx.send(f"❌ Failed to parse `{attachment.filename}` — is it a valid PDF? Error: {e}")
+            continue
+
+        if not full_text.strip():
+            await ctx.send(f"⚠️ `{attachment.filename}` appears to be empty or image-only (no extractable text). Skipping.")
+            continue
+
+        # Clean PII from the extracted text
+        full_text = clean_text(full_text)
+
+        # Add to RAG
+        try:
+            chunks_added = await asyncio.to_thread(
+                rag_add_doc,
+                guild_id=ctx.guild.id,
+                author_name=ctx.author.display_name,
+                content=full_text,
+                source_name=attachment.filename,
+            )
+            total_chunks += chunks_added
+            await ctx.send(f"✅ `{attachment.filename}` — added **{chunks_added}** knowledge chunks to the RAG!")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to add `{attachment.filename}` to RAG: {e}")
+            continue
+
+    # Process TXT attachments
+    for attachment in txt_attachments:
+        await ctx.send(f"📝 Processing **{attachment.filename}**...")
+
+        try:
+            file_bytes = await attachment.read()
+            full_text = file_bytes.decode("utf-8", errors="replace")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to read `{attachment.filename}`: {e}")
+            continue
+
+        if not full_text.strip():
+            await ctx.send(f"⚠️ `{attachment.filename}` is empty. Skipping.")
+            continue
+
+        full_text = clean_text(full_text)
+
+        try:
+            chunks_added = await asyncio.to_thread(
+                rag_add_doc,
+                guild_id=ctx.guild.id,
+                author_name=ctx.author.display_name,
+                content=full_text,
+                source_name=attachment.filename,
+            )
+            total_chunks += chunks_added
+            await ctx.send(f"✅ `{attachment.filename}` — added **{chunks_added}** knowledge chunks to the RAG!")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to add `{attachment.filename}` to RAG: {e}")
+            continue
+
+    if total_chunks > 0:
+        final_stats = rag_stats(ctx.guild.id)
+        embed = discord.Embed(
+            title="🧠 Knowledge Base Updated!",
+            description=(
+                f"Successfully processed your upload and added **{total_chunks}** chunks.\n"
+                f"The knowledge base now has **{final_stats['total_entries']}** total entries.\n\n"
+                f"Your notes will be referenced in future `!saveus`, `!helpus`, and `!quiz` results as "
+                f"**✨ Community Spotlight** contributions credited to **@{ctx.author.display_name}**."
+            ),
+            color=0xC89116,
+        )
+        embed.set_footer(text="PanikBot RAG · Upload more notes anytime with !learnthis")
+        await ctx.send(embed=embed)
 
 
 @bot.command(name="ragsync")
@@ -671,34 +899,22 @@ async def saveus_cmd(ctx):
     else:
         channels_to_scan = [ch for ch in ctx.guild.text_channels if ch.permissions_for(ctx.guild.me).read_message_history]
 
-    messages_collected: List[tuple] = []
+    grouped = await collect_messages_grouped(
+        channels_to_scan,
+        cutoff_after=cutoff,
+        keyword_filters=keyword_filters if keyword_filters else None,
+        limit_per_source=2000,
+        include_threads=True,
+    )
 
-    for ch in channels_to_scan:
-        try:
-            async for msg in ch.history(limit=2000, after=cutoff):
-                if msg.author.bot:
-                    continue
-                try:
-                    cleaned = clean_text(msg.content)
-                except Exception:
-                    continue
-                if not cleaned.strip():
-                    continue
-                if keyword_filters:
-                    if not any(kw.lower() in cleaned.lower() for kw in keyword_filters):
-                        continue
-                messages_collected.append((ch.name, msg.author.display_name, cleaned))
-        except discord.Forbidden:
-            continue
-
-    if not messages_collected:
+    total = count_grouped_messages(grouped)
+    if total == 0:
         await ctx.send(f"No messages found in the last **{hours} hours**.")
         return
 
-    chat_history = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_collected])
-    chat_history = strip_bot_commands(chat_history)
+    chat_history = format_grouped_messages(grouped)
 
-    await ctx.send(f"📨 Collected **{len(messages_collected)}** messages. Analysing with Gemini...")
+    await ctx.send(f"📨 Collected **{total}** messages across **{len(grouped)}** contexts. Analysing with Gemini...")
 
     try:
         result = await asyncio.to_thread(analyze_chat, chat_history)
@@ -747,33 +963,32 @@ async def saveus_cmd(ctx):
         await ctx.send("👍 No problem! Let me know if you need anything else.")
         return
 
-    await ctx.send("📝 Generating your study guide, hang tight...")
-
     # Query community RAG knowledge base
     community_context = ""
     if ctx.guild:
         try:
             community_context = await asyncio.to_thread(rag_query, ctx.guild.id, topics)
-            if community_context:
-                await ctx.send("🧠 Found community knowledge — weaving it into the guide!")
         except Exception as e:
             print(f"  ⚠️ RAG query failed: {e}")
 
     try:
-        file_path = await asyncio.to_thread(
-            generate_html_resource,
-            chat_history=chat_history,
-            topics=topics,
-            student_level=level,
-            subject_area=subject,
-            rag_context=community_context,
+        file_path, status_msg = await generate_with_progress(
+            ctx.channel,
+            asyncio.to_thread(
+                generate_html_resource,
+                chat_history=chat_history,
+                topics=topics,
+                student_level=level,
+                subject_area=subject,
+                rag_context=community_context,
+            ),
         )
     except Exception as e:
         await ctx.send(f"❌ Study guide generation failed: {e}")
         return
 
     # Upload to S3 and get a URL
-    await ctx.send("☁️ Uploading to S3...")
+    await status_msg.edit(content="📊 **Generating Study Guide**\n`[██████████]`\n_☁️ Uploading to S3..._")
 
     try:
         upload_result = await asyncio.to_thread(upload_html_and_get_object_url, file_path)
@@ -854,33 +1069,23 @@ class DateTimeModal(discord.ui.Modal, title="Enter Date & Time Range"):
         else:
             channels_to_scan = [ch for ch in ctx.guild.text_channels if ch.permissions_for(ctx.guild.me).read_message_history]
 
-        messages_collected: List[tuple] = []
-        for ch in channels_to_scan:
-            try:
-                async for msg in ch.history(limit=5000, after=start_dt, before=end_dt):
-                    if msg.author.bot:
-                        continue
-                    try:
-                        cleaned = clean_text(msg.content)
-                    except Exception:
-                        continue
-                    if not cleaned.strip():
-                        continue
-                    if keyword_filters:
-                        if not any(kw.lower() in cleaned.lower() for kw in keyword_filters):
-                            continue
-                    messages_collected.append((ch.name, msg.author.display_name, cleaned))
-            except discord.Forbidden:
-                continue
+        grouped = await collect_messages_grouped(
+            channels_to_scan,
+            cutoff_after=start_dt,
+            cutoff_before=end_dt,
+            keyword_filters=keyword_filters if keyword_filters else None,
+            limit_per_source=5000,
+            include_threads=True,
+        )
 
-        if not messages_collected:
+        total = count_grouped_messages(grouped)
+        if total == 0:
             await ctx.send("No messages found in that date range.")
             return
 
-        chat_history = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_collected])
-        chat_history = strip_bot_commands(chat_history)
+        chat_history = format_grouped_messages(grouped)
 
-        await ctx.send(f"📨 Collected **{len(messages_collected)}** messages. Analysing with Gemini...")
+        await ctx.send(f"📨 Collected **{total}** messages across **{len(grouped)}** contexts. Analysing with Gemini...")
 
         try:
             result = await asyncio.to_thread(analyze_chat, chat_history)
@@ -925,32 +1130,31 @@ class DateTimeModal(discord.ui.Modal, title="Enter Date & Time Range"):
             await ctx.send("👍 No problem! Let me know if you need anything else.")
             return
 
-        await ctx.send("📝 Generating your study guide, hang tight...")
-
         # Query community RAG knowledge base
         community_context = ""
         if ctx.guild:
             try:
                 community_context = await asyncio.to_thread(rag_query, ctx.guild.id, topics)
-                if community_context:
-                    await ctx.send("🧠 Found community knowledge — weaving it into the guide!")
             except Exception as e:
                 print(f"  ⚠️ RAG query failed: {e}")
 
         try:
-            file_path = await asyncio.to_thread(
-                generate_html_resource,
-                chat_history=chat_history,
-                topics=topics,
-                student_level=level,
-                subject_area=subject,
-                rag_context=community_context,
+            file_path, status_msg = await generate_with_progress(
+                ctx.channel,
+                asyncio.to_thread(
+                    generate_html_resource,
+                    chat_history=chat_history,
+                    topics=topics,
+                    student_level=level,
+                    subject_area=subject,
+                    rag_context=community_context,
+                ),
             )
         except Exception as e:
             await ctx.send(f"❌ Study guide generation failed: {e}")
             return
 
-        await ctx.send("☁️ Uploading to S3...")
+        await status_msg.edit(content="📊 **Generating Study Guide**\n`[██████████]`\n_☁️ Uploading to S3..._")
 
         try:
             upload_result = await asyncio.to_thread(upload_html_and_get_object_url, file_path)
@@ -969,6 +1173,42 @@ class DateTimeModal(discord.ui.Modal, title="Enter Date & Time Range"):
             await ctx.send(f"📎 **Link to study guide:** {url}")
         else:
             await ctx.send("⚠️ Upload succeeded but no URL was returned.")
+
+
+class DateSelectView(discord.ui.View):
+    def __init__(self, ctx):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.add_item(DateSelectDropdown(ctx, 'start'))
+        self.add_item(DateSelectDropdown(ctx, 'end'))
+
+
+class DateSelectDropdown(discord.ui.Select):
+    def __init__(self, ctx, which):
+        self.ctx = ctx
+        self.which = which
+        now = datetime.now()
+        years = [str(now.year - 1), str(now.year), str(now.year + 1)]
+        months = [str(m).zfill(2) for m in range(1, 13)]
+        days = [str(d).zfill(2) for d in range(1, 32)]
+        hours = [str(h).zfill(2) for h in range(0, 24)]
+        minutes = [str(m).zfill(2) for m in range(0, 60, 5)]
+        options = []
+        for y in years:
+            for m in months:
+                for d in days:
+                    for h in hours:
+                        for min in minutes:
+                            label = f"{y}-{m}-{d} {h}:{min}"
+                            options.append(discord.SelectOption(label=label, value=label))
+        super().__init__(
+            placeholder=f"Select {which} date/time...",
+            min_values=1, max_values=1,
+            options=options[:100],  # Discord limit
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(f"Selected {self.which} date/time: {self.values[0]}", ephemeral=True)
 
 
 class AnalyseDateButton(discord.ui.View):
@@ -1013,7 +1253,7 @@ async def quiz_cmd(ctx):
         subject_area  = session["subject_area"]
         await ctx.send(f"🧠 Generating a quiz from your latest study session ({subject_area})...")
     else:
-        # Fallback: scrape recent messages like before
+        # Fallback: scrape recent messages (with thread awareness)
         guild_settings   = get_guild_settings(ctx.guild.id)
         hours            = guild_settings.get("hours", 24)
         allowed_channels = guild_settings.get("channels", [])
@@ -1026,31 +1266,20 @@ async def quiz_cmd(ctx):
         else:
             channels_to_scan = [ch for ch in ctx.guild.text_channels if ch.permissions_for(ctx.guild.me).read_message_history]
 
-        messages_collected: List[tuple] = []
-        for ch in channels_to_scan:
-            try:
-                async for msg in ch.history(limit=2000, after=cutoff):
-                    if msg.author.bot:
-                        continue
-                    try:
-                        cleaned = clean_text(msg.content)
-                    except Exception:
-                        continue
-                    if not cleaned.strip():
-                        continue
-                    if keyword_filters:
-                        if not any(kw.lower() in cleaned.lower() for kw in keyword_filters):
-                            continue
-                    messages_collected.append((ch.name, msg.author.display_name, cleaned))
-            except discord.Forbidden:
-                continue
+        grouped = await collect_messages_grouped(
+            channels_to_scan,
+            cutoff_after=cutoff,
+            keyword_filters=keyword_filters if keyword_filters else None,
+            limit_per_source=2000,
+            include_threads=True,
+        )
 
-        if not messages_collected:
+        total = count_grouped_messages(grouped)
+        if total == 0:
             await ctx.send(f"No messages found in the last **{hours} hours**.")
             return
 
-        chat_history = "\n".join([f"[#{ch}] {author}: {text}" for ch, author, text in messages_collected])
-        chat_history = strip_bot_commands(chat_history)
+        chat_history = format_grouped_messages(grouped)
 
         await ctx.send("🧠 Generating a quiz from recent messages...")
 
@@ -1298,33 +1527,32 @@ async def quiz_cmd(ctx):
                 return
 
             if yn_reply.content.strip().lower() in ("yes", "y"):
-                await ctx.send("📝 Generating explanation study guide, hang tight...")
-
                 # Query community RAG knowledge base
                 community_context = ""
                 if ctx.guild:
                     try:
                         community_context = await asyncio.to_thread(rag_query, ctx.guild.id, weak_topics)
-                        if community_context:
-                            await ctx.send("🧠 Found community knowledge — weaving it into the guide!")
                     except Exception as e:
                         print(f"  ⚠️ RAG query failed: {e}")
 
                 try:
-                    file_name = await asyncio.to_thread(
-                        generate_html_resource,
-                        chat_history,
-                        weak_topics,
-                        student_level,
-                        subject_area,
-                        rag_context=community_context,
+                    file_name, status_msg = await generate_with_progress(
+                        ctx.channel,
+                        asyncio.to_thread(
+                            generate_html_resource,
+                            chat_history,
+                            weak_topics,
+                            student_level,
+                            subject_area,
+                            rag_context=community_context,
+                        ),
                     )
                 except Exception as e:
                     await ctx.send(f"❌ Study guide generation failed: {e}")
                     bot._quiz_pending = None
                     return
 
-                await ctx.send("☁️ Uploading to S3...")
+                await status_msg.edit(content="📊 **Generating Study Guide**\n`[██████████]`\n_☁️ Uploading to S3..._")
 
                 try:
                     upload_result = await asyncio.to_thread(upload_html_and_get_object_url, file_name)
@@ -1360,6 +1588,199 @@ def strip_bot_commands(chat_history: str) -> str:
     lines = chat_history.split("\n")
     filtered = [line for line in lines if "!" not in line]
     return "\n".join(filtered)
+
+
+# ─────────────────────────────────────────
+# !battle — rapid-fire quiz battle in a thread
+# ─────────────────────────────────────────
+
+@bot.command(name="battle")
+async def battle_cmd(ctx, *, topic: str = None):
+    if ctx.guild is None:
+        await ctx.send("Run this in a server channel.")
+        return
+    if not topic:
+        await ctx.send("Please provide a topic.\nExample: `!battle Biology Cells`")
+        return
+
+    await ctx.send(f"⚔️ **Battle Mode!** Generating 5 questions on **{topic}**...")
+
+    try:
+        battle_data = await asyncio.to_thread(generate_battle_questions, topic)
+    except Exception as e:
+        await ctx.send(f"❌ Failed to generate battle questions: {e}")
+        return
+
+    questions = battle_data.get("questions", [])
+    if not questions:
+        await ctx.send("❌ Couldn't generate questions. Try again.")
+        return
+
+    # Create a thread for the battle
+    thread = await ctx.channel.create_thread(
+        name=f"⚔️ Battle: {topic[:80]}",
+        type=discord.ChannelType.public_thread,
+        auto_archive_duration=60,
+    )
+
+    # Track players and scores
+    players: Dict[int, Dict[str, Any]] = {}  # user_id -> {display_name, score}
+
+    await thread.send(
+        f"⚔️ **BATTLE: {topic}** ⚔️\n\n"
+        f"**Rules:**\n"
+        f"• 5 rapid-fire questions — type your answer in chat!\n"
+        f"• First correct answer wins the point\n"
+        f"• Next question drops 5 seconds after a correct answer\n"
+        f"• If nobody gets it in 30 seconds, I'll explain and move on\n\n"
+        f"Get ready... first question in **3 seconds!**"
+    )
+    await asyncio.sleep(3)
+
+    for i, q in enumerate(questions, 1):
+        # Build set of acceptable answers (case-insensitive)
+        correct_answers = {q["answer"].strip().lower()}
+        for alt in q.get("accept_also", []):
+            correct_answers.add(alt.strip().lower())
+
+        await thread.send(f"**Question {i}/5:**\n>>> {q['question']}")
+
+        # Wait for the first correct answer (30s timeout)
+        winner = None
+
+        def check_battle(m):
+            return m.channel == thread and not m.author.bot
+
+        deadline = asyncio.get_event_loop().time() + 30.0
+
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                msg = await bot.wait_for("message", check=check_battle, timeout=remaining)
+            except asyncio.TimeoutError:
+                break
+
+            # Register player if new
+            if msg.author.id not in players:
+                players[msg.author.id] = {"display_name": msg.author.display_name, "score": 0}
+
+            # Check if answer is correct
+            user_answer = msg.content.strip().lower()
+            if user_answer in correct_answers:
+                winner = msg.author
+                players[msg.author.id]["score"] += 1
+                break
+
+        if winner:
+            await thread.send(f"✅ **Correct!** {winner.mention} gets the point! 🎯\n💡 _{q['explanation']}_")
+            if i < len(questions):
+                await thread.send("⏳ Next question in **5 seconds**...")
+                await asyncio.sleep(5)
+        else:
+            # Nobody got it — explain the answer
+            await thread.send(
+                f"⏰ **Time's up!** Nobody got it.\n"
+                f"The answer was: **{q['answer']}**\n"
+                f"💡 _{q['explanation']}_"
+            )
+            if i < len(questions):
+                await thread.send("⏳ Next question in **5 seconds**...")
+                await asyncio.sleep(5)
+
+    # ── Final leaderboard ──
+    if not players:
+        await thread.send("😅 No one participated! Battle over.")
+        await ctx.send(f"⚔️ Battle on **{topic}** finished in {thread.mention} — but nobody played!")
+        return
+
+    sorted_players = sorted(players.values(), key=lambda p: p["score"], reverse=True)
+    winner_name = sorted_players[0]["display_name"]
+    winner_score = sorted_players[0]["score"]
+
+    leaderboard_lines = []
+    medals = ["🥇", "🥈", "🥉"]
+    for idx, p in enumerate(sorted_players):
+        medal = medals[idx] if idx < len(medals) else "▫️"
+        leaderboard_lines.append(f"{medal} **{p['display_name']}** — {p['score']}/5")
+
+    embed = discord.Embed(
+        title=f"⚔️ Battle Results: {topic}",
+        description="\n".join(leaderboard_lines),
+        color=0xFFD700,
+    )
+    embed.set_footer(text="PanikBot Battle Mode")
+
+    if winner_score > 0:
+        await thread.send(f"🏆 **{winner_name} wins the battle with {winner_score}/5!** 🏆")
+    else:
+        await thread.send("😬 Nobody scored any points this round!")
+
+    await thread.send(embed=embed)
+    await ctx.send(f"⚔️ Battle on **{topic}** is over! Check results in {thread.mention}")
+
+
+@bot.command(name="battleexplain")
+async def battleexplain_cmd(ctx, *, topic: str = None):
+    if not topic:
+        await ctx.send("Please provide a topic/question to explain.")
+        return
+    try:
+        result = await asyncio.to_thread(analyze_chat, topic)
+        summary = result.get("summary_message", "No explanation returned.")
+        await ctx.send(f"💡 Explanation: {summary}")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to generate explanation: {e}")
+
+
+# ─────────────────────────────────────────
+# Progress bar helper for study guide generation
+# ─────────────────────────────────────────
+
+async def progress_bar_task(channel, status_msg, stop_event: asyncio.Event):
+    """Animate a progress bar in-chat while study guide generates."""
+    stages = [
+        ("🔍 Analysing chat history...",       "░░░░░░░░░░", 0),
+        ("🧠 Thinking about topics...",        "██░░░░░░░░", 1),
+        ("🖼️ Searching for images...",         "████░░░░░░", 2),
+        ("📝 Writing study guide...",          "██████░░░░", 3),
+        ("📝 Writing study guide...",          "███████░░░", 4),
+        ("📝 Still writing...",               "████████░░", 5),
+        ("✨ Polishing...",                    "█████████░", 6),
+        ("✨ Almost done...",                  "██████████", 7),
+    ]
+    idx = 0
+    try:
+        while not stop_event.is_set():
+            stage_label, bar, _ = stages[min(idx, len(stages) - 1)]
+            text = f"📊 **Generating Study Guide**\n`[{bar}]`\n_{stage_label}_"
+            try:
+                await status_msg.edit(content=text)
+            except discord.NotFound:
+                return
+            idx += 1
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        pass
+
+
+async def generate_with_progress(channel, generate_coro):
+    """Run a generation coroutine while showing a progress bar. Returns the result."""
+    status_msg = await channel.send("📊 **Generating Study Guide**\n`[░░░░░░░░░░]`\n_Starting..._")
+    stop_event = asyncio.Event()
+    progress = asyncio.create_task(progress_bar_task(channel, status_msg, stop_event))
+
+    try:
+        result = await generate_coro
+        return result, status_msg
+    finally:
+        stop_event.set()
+        progress.cancel()
+        try:
+            await progress
+        except asyncio.CancelledError:
+            pass
 
 # ─────────────────────────────────────────
 # Events
@@ -1506,6 +1927,7 @@ async def on_message(message: discord.Message):
             await message.channel.send("Mention me in a server channel to open settings.")
             return
         embed = discord.Embed(
+           
             title="⚙️ PanikBot Settings",
             description="Use the dropdowns and buttons below to configure me.\nAll changes are saved instantly.",
             color=0x5865F2
@@ -1522,6 +1944,7 @@ async def on_message(message: discord.Message):
 
 if __name__ == "__main__":
     token = os.environ.get("DISCORD_TOKEN")
+
     if not token:
         print("Set the DISCORD_TOKEN environment variable to run the bot.")
     else:

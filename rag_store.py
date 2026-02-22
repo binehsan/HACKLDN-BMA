@@ -157,3 +157,65 @@ def remove_message(guild_id: int, message_id: int) -> bool:
     except Exception:
         pass
     return False
+
+
+def add_document_chunks(
+    guild_id: int,
+    author_name: str,
+    content: str,
+    source_name: str,
+    chunk_size: int = 800,
+    chunk_overlap: int = 100,
+) -> int:
+    """Split a large document (e.g. PDF text) into chunks and add each to the RAG.
+
+    Returns the number of chunks added.
+    """
+    collection = _get_collection(guild_id)
+
+    # Simple chunking by character count with overlap
+    chunks: list[str] = []
+    start = 0
+    while start < len(content):
+        end = start + chunk_size
+        chunk = content[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        start += chunk_size - chunk_overlap
+
+    if not chunks:
+        return 0
+
+    added = 0
+    for i, chunk in enumerate(chunks):
+        # Use a deterministic ID based on source + chunk index so re-uploads update
+        doc_id = f"doc_{guild_id}_{source_name}_{i}"
+
+        embedding = _embed_texts([chunk])[0]
+
+        # Upsert: delete existing then add
+        try:
+            existing = collection.get(ids=[doc_id])
+            if existing and existing["ids"]:
+                collection.delete(ids=[doc_id])
+        except Exception:
+            pass
+
+        collection.add(
+            ids=[doc_id],
+            documents=[chunk],
+            embeddings=[embedding],
+            metadatas=[{
+                "author": author_name,
+                "channel": "pdf-upload",
+                "thread": source_name,
+                "reactions": 0,
+                "source_type": "pdf",
+                "chunk_index": i,
+                "total_chunks": len(chunks),
+            }],
+        )
+        added += 1
+
+    print(f"  ✅ Added {added} chunks from '{source_name}' to RAG for guild {guild_id}")
+    return added
