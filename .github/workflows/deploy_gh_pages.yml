@@ -1,0 +1,47 @@
+name: Deploy website to GitHub Pages
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false # we will use the token input to the deploy action
+
+      - name: Setup Node (optional caching for assets)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Prevent accidental secrets from being published
+        run: |
+          echo "Checking for common secret files and patterns..."
+          # Fail if a .env file is tracked in git (accidental commit)
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo "ERROR: .env is tracked in the repository. Remove it and rotate credentials before deploying."
+            git ls-files --error-unmatch .env || true
+            exit 1
+          fi
+
+          # Look for obvious secrets in the repository contents
+          if grep -R --line-number -E "AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|GEMINI_API_KEY|DISCORD_TOKEN|AKIA[0-9A-Z]{16}" . >/dev/null 2>&1; then
+            echo "ERROR: Potential secret pattern found in repository. Please remove secrets and use repository secrets instead."
+            exit 1
+          fi
+
+          echo "No obvious secrets detected. Proceeding with deploy."
+
+      - name: Deploy website/
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          publish_dir: ./website
+          publish_branch: gh-pages
+          publish_user_name: 'panikbot-deploy'
+          publish_user_email: 'panikbot-deploy@users.noreply.github.com'
+          github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -11,7 +11,7 @@ from google.genai import types
 # Initialize the SDK client (Make sure GEMINI_API_KEY is in your environment variables)
 load_dotenv()
 client = genai.Client()
-MODEL_ID = 'gemini-2.5-pro'
+MODEL_ID = 'gemini-2.5-flash'
 
 # =====================================================================
 # 1. PYDANTIC SCHEMA FOR STRUCTURED OUTPUT
